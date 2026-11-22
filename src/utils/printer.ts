@@ -2,34 +2,117 @@ import { PrinterSettings, ReceiptSettings, StoreInfo, Transaction } from '../typ
 import { formatDateShort, formatMoney, formatNumber } from './storage';
 import { renderReceiptToCanvas } from './receiptImage';
 
-export interface PairedDevice { name: string; address: string; }
+export interface PairedDevice {
+  name: string;
+  address: string;
+  bonded?: boolean;
+  isPrinter?: boolean;
+}
 
 interface NativePrinterPlugin {
   listPaired(): Promise<{ devices: PairedDevice[] }>;
+  scanDevices?(): Promise<{ devices: PairedDevice[] }>;
+  testConnection?(options: { address: string }): Promise<{ ok: boolean }>;
   printBytes(options: { address: string; base64: string }): Promise<{ ok: boolean }>;
   testPrint(options: { address: string; paperWidth: string }): Promise<{ ok: boolean }>;
 }
 
+interface CapacitorBridgeWindow {
+  Capacitor?: {
+    isNativePlatform?: () => boolean;
+    getPlatform?: () => string;
+    Plugins?: Record<string, NativePrinterPlugin>;
+    registerPlugin?: <T>(pluginName: string) => T;
+    nativePromise?: <T>(pluginName: string, methodName: string, options?: Record<string, unknown>) => Promise<T>;
+  };
+}
+
+let cachedNativePrinter: NativePrinterPlugin | null = null;
+
 function getNativePrinter(): NativePrinterPlugin | null {
-  const cap = (window as unknown as { Capacitor?: { Plugins?: { BluetoothPrinter?: NativePrinterPlugin } } }).Capacitor;
-  return cap?.Plugins?.BluetoothPrinter || null;
+  if (cachedNativePrinter) return cachedNativePrinter;
+  const cap = (window as unknown as CapacitorBridgeWindow).Capacitor;
+  if (!cap) return null;
+
+  if (cap.Plugins?.BluetoothPrinter) {
+    cachedNativePrinter = cap.Plugins.BluetoothPrinter;
+    return cachedNativePrinter;
+  }
+
+  const isNative =
+    Boolean(cap.isNativePlatform?.()) ||
+    cap.getPlatform?.() === 'android' ||
+    typeof cap.nativePromise === 'function';
+
+  if (!isNative) return null;
+
+  if (typeof cap.registerPlugin === 'function') {
+    try {
+      const registered = cap.registerPlugin<NativePrinterPlugin>('BluetoothPrinter');
+      if (registered) {
+        cachedNativePrinter = registered;
+        return cachedNativePrinter;
+      }
+    } catch {
+      // fallback ke nativePromise
+    }
+  }
+
+  if (typeof cap.nativePromise === 'function') {
+    const np = cap.nativePromise.bind(cap);
+    cachedNativePrinter = {
+      listPaired: () => np<{ devices: PairedDevice[] }>('BluetoothPrinter', 'listPaired', {}),
+      scanDevices: () => np<{ devices: PairedDevice[] }>('BluetoothPrinter', 'scanDevices', {}),
+      testConnection: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testConnection', options),
+      printBytes: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'printBytes', options),
+      testPrint: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testPrint', options),
+    };
+    return cachedNativePrinter;
+  }
+
+  return null;
+}
+
+export function isNativeAndroidPrinterAvailable(): boolean {
+  return !!getNativePrinter();
 }
 
 export async function scanPairedBluetoothPrinters(): Promise<PairedDevice[]> {
   const native = getNativePrinter();
   if (native) {
+    if (typeof native.scanDevices === 'function') {
+      const res = await native.scanDevices();
+      return res.devices || [];
+    }
     const res = await native.listPaired();
     return res.devices || [];
   }
-  const nav = navigator as unknown as { bluetooth?: { requestDevice: (opts: unknown) => Promise<{ name?: string; id: string }> } };
+  const nav = navigator as unknown as {
+    bluetooth?: { requestDevice: (opts: unknown) => Promise<{ name?: string; id: string }> };
+  };
   if (nav.bluetooth) {
     const dev = await nav.bluetooth.requestDevice({
       acceptAllDevices: true,
       optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb', '49535343-fe7d-4ae5-8fa9-9fafd205e455'],
     });
-    return [{ name: dev.name || 'Printer Thermal BLE', address: dev.id }];
+    return [{ name: dev.name || 'Printer Thermal BLE', address: dev.id, isPrinter: true }];
   }
-  throw new Error('Bluetooth native aktif setelah dibungkus menjadi APK Android.');
+  throw new Error('Bluetooth native aktif di aplikasi APK Android. Di browser biasa silakan gunakan tombol Cetak.');
+}
+
+export async function testBluetoothPrinterConnection(address: string): Promise<boolean> {
+  const native = getNativePrinter();
+  if (!native) {
+    throw new Error('Koneksi Bluetooth native hanya tersedia di APK Android.');
+  }
+  if (!address) {
+    throw new Error('Pilih printer terlebih dahulu.');
+  }
+  if (typeof native.testConnection === 'function') {
+    const res = await native.testConnection({ address });
+    return Boolean(res?.ok);
+  }
+  return true;
 }
 
 function encodeAscii(str: string): number[] {
@@ -44,7 +127,8 @@ function encodeAscii(str: string): number[] {
 function padRow(left: string, right: string, cols: number): string {
   const maxLeft = Math.max(4, cols - right.length - 1);
   const l = left.length > maxLeft ? left.slice(0, maxLeft) : left;
-  return l + ' '.repeat(Math.max(1, cols - l.length - right.length)) + right;
+  const spaces = Math.max(1, cols - l.length - right.length);
+  return l + ' '.repeat(spaces) + right;
 }
 
 export function buildEscPosReceiptBytes(
@@ -57,37 +141,52 @@ export function buildEscPosReceiptBytes(
   const cols = printerCfg.paperWidth === '80' ? 48 : 32;
   const line = '-'.repeat(cols);
   const b: number[] = [];
+
   const pushText = (t: string) => b.push(...encodeAscii(t + '\n'));
   const ESC = 0x1b;
   const GS = 0x1d;
 
-  b.push(ESC, 0x40, ESC, 0x61, 0x01, ESC, 0x45, 0x01);
+  b.push(ESC, 0x40);
+  b.push(ESC, 0x61, 0x01);
+  b.push(ESC, 0x45, 0x01);
   if (receiptCfg.largeStoreName) b.push(GS, 0x21, 0x11);
   pushText(store.name);
-  b.push(GS, 0x21, 0x00, ESC, 0x45, 0x00);
+  b.push(GS, 0x21, 0x00);
+  b.push(ESC, 0x45, 0x00);
   if (store.address) pushText(store.address);
   if (store.city) pushText(store.city);
   if (store.phone) pushText(store.phone);
   pushText('');
 
   b.push(ESC, 0x61, 0x00);
-  pushText(padRow(formatDateShort(tx.createdAt), receiptCfg.showTxIdMode === 'none' ? '' : `#${tx.receiptNo}`, cols));
-  if (tx.customerName && tx.customerName !== 'Umum') pushText(`Pelanggan: ${tx.customerName}`);
-  if (receiptCfg.showCashier) pushText(`Kasir: ${tx.cashierName}`);
+  const idPart = receiptCfg.showTxIdMode === 'none' ? '' : `#${tx.receiptNo}`;
+  pushText(padRow(formatDateShort(tx.createdAt), idPart, cols));
+  if (tx.customerName && tx.customerName !== 'Umum') {
+    pushText(`Pelanggan: ${tx.customerName}`);
+  }
+  if (receiptCfg.showCashier) {
+    pushText(`Kasir: ${tx.cashierName}`);
+  }
   pushText(line);
 
-  const money = (v: number) => formatMoney(v, receiptCfg.showCurrency ? currencySymbol : '', receiptCfg.currencySpace, receiptCfg.currencyRight);
+  const money = (v: number) =>
+    formatMoney(v, receiptCfg.showCurrency ? currencySymbol : '', receiptCfg.currencySpace, receiptCfg.currencyRight);
 
   tx.items.forEach((item, idx) => {
     const prefix = receiptCfg.showItemIndex ? `${idx + 1}. ` : '';
     const qtyStr = `${item.qty}${receiptCfg.showUnit === 'all' ? (receiptCfg.unitSpace ? ` ${item.unit}` : item.unit) : ''}x`;
     const sub = item.unitPrice * item.qty - item.discount;
+
     b.push(ESC, 0x45, 0x01);
     pushText(`${prefix}${item.name}`);
     b.push(ESC, 0x45, 0x00);
     pushText(padRow(`  ${qtyStr} ${formatNumber(item.unitPrice)}`, formatNumber(sub), cols));
-    if (item.discount > 0) pushText(padRow('  Diskon item', `-${formatNumber(item.discount)}`, cols));
-    if (item.note) pushText(`  Cat: ${item.note}`);
+    if (item.discount > 0) {
+      pushText(padRow('  Diskon item', `-${formatNumber(item.discount)}`, cols));
+    }
+    if (item.note) {
+      pushText(`  Cat: ${item.note}`);
+    }
   });
 
   pushText(line);
@@ -95,31 +194,50 @@ export function buildEscPosReceiptBytes(
     if (tx.discount > 0) pushText(padRow('Diskon', `-${money(tx.discount)}`, cols));
     if (tx.tax > 0) pushText(padRow('Pajak', money(tx.tax), cols));
     if (tx.shipping > 0) pushText(padRow('Ongkir', money(tx.shipping), cols));
+
     b.push(ESC, 0x45, 0x01);
     pushText(padRow('Total', money(tx.total), cols));
     b.push(ESC, 0x45, 0x00);
     if (tx.paidAmount > 0) {
       pushText(padRow(tx.paymentMethod === 'non_tunai' ? 'Non Tunai' : 'Tunai', money(tx.paidAmount), cols));
-      pushText(padRow(tx.changeAmount >= 0 ? 'Kembali' : 'Kurang', money(Math.abs(tx.changeAmount)), cols));
+      if (tx.changeAmount >= 0) {
+        pushText(padRow('Kembali', money(tx.changeAmount), cols));
+      } else {
+        pushText(padRow('Kurang', money(Math.abs(tx.changeAmount)), cols));
+      }
     } else {
       pushText(padRow('Status', 'Belum Dibayar', cols));
     }
   }
 
-  if (tx.note) { pushText(line); pushText(`Catatan: ${tx.note}`); }
+  if (tx.note) {
+    pushText(line);
+    pushText(`Catatan: ${tx.note}`);
+  }
+
   pushText('');
   if (receiptCfg.centerFooter) b.push(ESC, 0x61, 0x01);
   if (store.footer) pushText(store.footer);
-  pushText('\n');
-  if (printerCfg.cutFeedExtra) pushText('\n');
-  if (printerCfg.cashDrawer) b.push(ESC, 0x70, 0x00, 0x19, 0xfa);
+  pushText('');
+  pushText('');
+  if (printerCfg.cutFeedExtra) {
+    pushText('');
+    pushText('');
+  }
+
+  if (printerCfg.cashDrawer) {
+    b.push(ESC, 0x70, 0x00, 0x19, 0xfa);
+  }
   b.push(GS, 0x56, 0x42, 0x00);
+
   return new Uint8Array(b);
 }
 
 function buildRasterGraphicEscPos(canvas: HTMLCanvasElement, printerCfg: PrinterSettings): Uint8Array {
   const targetWidth = printerCfg.paperWidth === '80' ? 576 : 384;
-  const targetHeight = Math.round(canvas.height * (targetWidth / canvas.width));
+  const scale = targetWidth / canvas.width;
+  const targetHeight = Math.round(canvas.height * scale);
+
   const off = document.createElement('canvas');
   off.width = targetWidth;
   off.height = targetHeight;
@@ -130,7 +248,8 @@ function buildRasterGraphicEscPos(canvas: HTMLCanvasElement, printerCfg: Printer
 
   const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight).data;
   const widthBytes = Math.ceil(targetWidth / 8);
-  const raster: number[] = [0x1b, 0x40, 0x1d, 0x76, 0x30, 0x00, widthBytes & 0xff, (widthBytes >> 8) & 0xff, targetHeight & 0xff, (targetHeight >> 8) & 0xff];
+  const header = [0x1b, 0x40, 0x1d, 0x76, 0x30, 0x00, widthBytes & 0xff, (widthBytes >> 8) & 0xff, targetHeight & 0xff, (targetHeight >> 8) & 0xff];
+  const raster: number[] = [...header];
 
   for (let y = 0; y < targetHeight; y++) {
     for (let xByte = 0; xByte < widthBytes; xByte++) {
@@ -139,12 +258,16 @@ function buildRasterGraphicEscPos(canvas: HTMLCanvasElement, printerCfg: Printer
         const x = xByte * 8 + bit;
         if (x < targetWidth) {
           const idx = (y * targetWidth + x) * 4;
-          if (0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2] < 150) byte |= 1 << (7 - bit);
+          const lum = 0.299 * imgData[idx] + 0.587 * imgData[idx + 1] + 0.114 * imgData[idx + 2];
+          if (lum < 150) {
+            byte |= 1 << (7 - bit);
+          }
         }
       }
       raster.push(byte);
     }
   }
+
   raster.push(0x0a, 0x0a, 0x0a);
   if (printerCfg.cutFeedExtra) raster.push(0x0a, 0x0a);
   if (printerCfg.cashDrawer) raster.push(0x1b, 0x70, 0x00, 0x19, 0xfa);
@@ -154,33 +277,59 @@ function buildRasterGraphicEscPos(canvas: HTMLCanvasElement, printerCfg: Printer
 
 function uint8ToBase64(bytes: Uint8Array): string {
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
   return btoa(binary);
 }
 
 export async function printThermalTransaction(
-  tx: Transaction, store: StoreInfo, receiptCfg: ReceiptSettings, printerCfg: PrinterSettings, currencySymbol: string
+  tx: Transaction,
+  store: StoreInfo,
+  receiptCfg: ReceiptSettings,
+  printerCfg: PrinterSettings,
+  currencySymbol: string
 ): Promise<'native' | 'browser'> {
   const native = getNativePrinter();
-  if (native && printerCfg.selectedPrinterAddress) {
-    const bytes = printerCfg.graphicMode
-      ? buildRasterGraphicEscPos(renderReceiptToCanvas(tx, store, receiptCfg, currencySymbol), printerCfg)
-      : buildEscPosReceiptBytes(tx, store, receiptCfg, printerCfg, currencySymbol);
+  if (native) {
+    if (!printerCfg.selectedPrinterAddress) {
+      throw new Error('Pilih printer Bluetooth terlebih dahulu di Pengaturan > Printer.');
+    }
+    let bytes: Uint8Array;
+    if (printerCfg.graphicMode) {
+      const canvas = renderReceiptToCanvas(tx, store, receiptCfg, currencySymbol);
+      bytes = buildRasterGraphicEscPos(canvas, printerCfg);
+    } else {
+      bytes = buildEscPosReceiptBytes(tx, store, receiptCfg, printerCfg, currencySymbol);
+    }
     const base64 = uint8ToBase64(bytes);
     await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
-    if (printerCfg.printTwice) await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
+    if (printerCfg.printTwice) {
+      await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
+    }
     return 'native';
   }
   window.print();
   return 'browser';
 }
 
-export async function runTestPrint(printerCfg: PrinterSettings): Promise<'native' | 'browser'> {
+export async function runTestPrint(printerCfg: PrinterSettings, storeName: string): Promise<'native' | 'browser'> {
   const native = getNativePrinter();
-  if (native && printerCfg.selectedPrinterAddress) {
-    await native.testPrint({ address: printerCfg.selectedPrinterAddress, paperWidth: printerCfg.paperWidth });
+  if (native) {
+    if (!printerCfg.selectedPrinterAddress) {
+      throw new Error('Pilih printer Bluetooth terlebih dahulu dengan mengetuk tombol Scan / Refresh.');
+    }
+    await native.testPrint({
+      address: printerCfg.selectedPrinterAddress,
+      paperWidth: printerCfg.paperWidth,
+    });
     return 'native';
   }
-  window.print();
+  const cols = printerCfg.paperWidth === '80' ? 48 : 32;
+  const msg = `${storeName}\nTEST PRINT BERHASIL\n${'-'.repeat(cols)}\nSimpelKasir (${printerCfg.paperWidth}mm)\n`;
+  if (typeof window !== 'undefined') {
+    console.info(msg);
+    window.print();
+  }
   return 'browser';
 }

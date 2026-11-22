@@ -27,6 +27,7 @@ import {
   PairedDevice,
   runTestPrint,
   scanPairedBluetoothPrinters,
+  testBluetoothPrinterConnection,
 } from '../utils/printer';
 
 interface SettingsProps {
@@ -58,6 +59,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   const backupInputRef = useRef<HTMLInputElement | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [scanningPrinter, setScanningPrinter] = useState(false);
+  const [connectingAddr, setConnectingAddr] = useState<string | null>(null);
 
   const [storeForm, setStoreForm] = useState(data.store);
   const [newUserName, setNewUserName] = useState('');
@@ -570,15 +572,32 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
 
     const handleScanPrinters = async () => {
       setScanningPrinter(true);
+      notify('Mencari printer Bluetooth sekitar... (pastikan printer menyala)');
       try {
         const list = await scanPairedBluetoothPrinters();
         setPairedDevices(list);
-        if (list.length === 0) notify('Tidak ada printer Bluetooth terpasang (pair dulu di Pengaturan HP)');
-        else notify(`Ditemukan ${list.length} perangkat Bluetooth`);
+        if (list.length === 0) {
+          notify('Tidak ada printer Bluetooth ditemukan. Pastikan printer menyala & Bluetooth HP aktif.');
+        } else {
+          notify(`Ditemukan ${list.length} perangkat Bluetooth`);
+        }
       } catch (err) {
-        notify((err as Error).message);
+        notify((err as Error).message || 'Gagal mencari printer Bluetooth');
       } finally {
         setScanningPrinter(false);
+      }
+    };
+
+    const handleSelectAndTestDevice = async (dev: PairedDevice) => {
+      setPr({ selectedPrinterName: dev.name, selectedPrinterAddress: dev.address });
+      setConnectingAddr(dev.address);
+      try {
+        await testBluetoothPrinterConnection(dev.address);
+        notify(`Printer ${dev.name} tersambung & siap cetak!`);
+      } catch (err) {
+        notify((err as Error).message || `Printer ${dev.name} disimpan, namun belum bisa tersambung`);
+      } finally {
+        setConnectingAddr(null);
       }
     };
 
@@ -660,45 +679,89 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
             onChange={(v) => setPr({ cutFeedExtra: v })}
           />
 
-          {/* Paired Bluetooth List + Refresh */}
+          {/* Paired & Discovered Bluetooth List + Refresh */}
           <div className="px-4 py-3 border-b border-[#EAECE8] dark:border-[#223039]">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
                 <p className="text-xs font-semibold text-slate-500">Printer Terpilih</p>
-                <p className="font-display text-sm font-bold text-[#165B49] dark:text-[#4BB89A]">
-                  {pr.selectedPrinterName || 'Belum dipilih (ketuk Refresh)'}
+                <p className="font-display text-sm font-bold text-[#165B49] dark:text-[#4BB89A] truncate">
+                  {pr.selectedPrinterName || 'Belum dipilih (ketuk Scan)'}
                 </p>
+                {pr.selectedPrinterAddress && (
+                  <p className="text-[11px] font-mono-tabular text-slate-400">{pr.selectedPrinterAddress}</p>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={handleScanPrinters}
-                disabled={scanningPrinter}
-                className="btn-lux-primary flex h-10 w-14 items-center justify-center rounded-xl"
-                aria-label="Scan printer Bluetooth"
-              >
-                <RefreshCw className={`h-5 w-5 ${scanningPrinter ? 'animate-spin' : ''}`} />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {pr.selectedPrinterAddress && (
+                  <button
+                    type="button"
+                    disabled={connectingAddr === pr.selectedPrinterAddress}
+                    onClick={async () => {
+                      setConnectingAddr(pr.selectedPrinterAddress);
+                      try {
+                        await testBluetoothPrinterConnection(pr.selectedPrinterAddress);
+                        notify(`Tersambung ke ${pr.selectedPrinterName}`);
+                      } catch (err) {
+                        notify((err as Error).message || 'Gagal menyambung ke printer');
+                      } finally {
+                        setConnectingAddr(null);
+                      }
+                    }}
+                    className="btn-lux-gold rounded-xl px-3 py-2.5 text-xs font-bold"
+                  >
+                    {connectingAddr === pr.selectedPrinterAddress ? 'Menyambung...' : 'Sambung'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleScanPrinters}
+                  disabled={scanningPrinter}
+                  className="btn-lux-primary flex h-10 w-14 items-center justify-center rounded-xl"
+                  aria-label="Scan printer Bluetooth"
+                >
+                  <RefreshCw className={`h-5 w-5 ${scanningPrinter ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
             </div>
+
+            {scanningPrinter && (
+              <p className="mt-2.5 text-xs font-medium text-[#165B49] dark:text-[#4BB89A]">
+                Sedang memindai perangkat Bluetooth di sekitar (±4 detik)...
+              </p>
+            )}
 
             {pairedDevices.length > 0 && (
               <div className="mt-3 divide-y divide-[#EAECE8] dark:divide-[#223039] rounded-2xl border border-[#DCE1DC] dark:border-[#2A3944]">
                 {pairedDevices.map((dev) => {
                   const selected = pr.selectedPrinterAddress === dev.address;
+                  const connecting = connectingAddr === dev.address;
                   return (
                     <button
                       key={dev.address}
                       type="button"
-                      onClick={() => {
-                        setPr({ selectedPrinterName: dev.name, selectedPrinterAddress: dev.address });
-                        notify(`Printer ${dev.name} dipilih`);
-                      }}
-                      className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm"
+                      disabled={connecting}
+                      onClick={() => handleSelectAndTestDevice(dev)}
+                      className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-[#F7F9F7] dark:hover:bg-[#1B262E]"
                     >
-                      <div>
-                        <p className="font-semibold">{dev.name}</p>
-                        <p className="text-xs font-mono-tabular text-slate-400">{dev.address}</p>
+                      <div className="min-w-0 pr-2">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="font-semibold truncate">{dev.name}</p>
+                          {dev.isPrinter && (
+                            <span className="rounded bg-[#165B49]/12 px-1.5 py-0.5 text-[10px] font-bold text-[#165B49] dark:text-[#4BB89A]">
+                              Printer
+                            </span>
+                          )}
+                          {dev.bonded !== undefined && (
+                            <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                              {dev.bonded ? 'Terpasang' : 'Baru'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono-tabular text-slate-400">
+                          {connecting ? 'Menghubungkan...' : dev.address}
+                        </p>
                       </div>
-                      {selected && <CheckCircle2 className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />}
+                      {selected && <CheckCircle2 className="h-5 w-5 shrink-0 text-[#165B49] dark:text-[#4BB89A]" />}
                     </button>
                   );
                 })}
