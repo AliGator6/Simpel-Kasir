@@ -2,10 +2,18 @@
   "id": "/",
   "name": "SimpelKasir",
   "short_name": "SimpelKasir",
+  "description": "Aplikasi kasir POS offline, arus kas, dan cetak struk thermal Bluetooth.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#1E2F42",
-  "theme_color": "#1E2F42",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+  "background_color": "#132622",
+  "theme_color": "#132622",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
 }

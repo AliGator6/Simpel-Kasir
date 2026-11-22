@@ -1,8 +1,19 @@
-import { AppData, Product } from '../types';
+import { ActiveOrderDraft, AppData, Product } from '../types';
 
 const STORAGE_KEY = 'simpelkasir_db_v1';
+const DRAFT_STORAGE_KEY = 'simpelkasir_active_draft_v1';
 const IDB_NAME = 'simpelkasir_idb';
 const IDB_STORE = 'state';
+
+export const EMPTY_DRAFT: ActiveOrderDraft = {
+  items: [],
+  customerId: null,
+  customerName: 'Umum',
+  discount: 0,
+  shipping: 0,
+  note: '',
+  progressStatus: 'antri',
+};
 
 export const DEFAULT_APP_DATA: AppData = {
   version: '1.0.0',
@@ -100,12 +111,102 @@ export const DEFAULT_APP_DATA: AppData = {
   ],
   activeUserId: 'usr-admin',
   products: [
-    { id: 'p-1', name: 'Aqua', sku: 'AQ-01', costPrice: 3500, sellPrice: 5000, priceEditable: false, barcode: '8998899111001', stock: 48, unit: 'pcs', category: 'Minuman', composition: '', image: '', catalogNote: 'Air mineral 600ml', createdAt: 1700000001000 },
-    { id: 'p-2', name: 'Bengbeng box 2rb', sku: 'BB-02', costPrice: 32500, sellPrice: 37500, priceEditable: false, barcode: '8996001300121', stock: 15, unit: 'box', category: 'Makanan Ringan', composition: '', image: '', catalogNote: '1 box isi 20 pcs', createdAt: 1700000002000 },
-    { id: 'p-3', name: 'Chitop B', sku: 'CT-03', costPrice: 15500, sellPrice: 18000, priceEditable: false, barcode: '8996001300222', stock: 20, unit: 'pcs', category: 'Makanan Ringan', composition: '', image: '', catalogNote: '', createdAt: 1700000003000 },
-    { id: 'p-4', name: 'Le mineral Tanggung', sku: 'LM-04', costPrice: 2200, sellPrice: 2500, priceEditable: false, barcode: '8996001600111', stock: 60, unit: 'pcs', category: 'Minuman', composition: '', image: '', catalogNote: 'Botol sedang 600ml', createdAt: 1700000004000 },
-    { id: 'p-5', name: 'Nextar box', sku: 'NX-05', costPrice: 15500, sellPrice: 18000, priceEditable: false, barcode: '8996001400333', stock: 18, unit: 'box', category: 'Makanan Ringan', composition: '', image: '', catalogNote: '', createdAt: 1700000005000 },
-    { id: 'p-6', name: 'Qtela', sku: 'QT-06', costPrice: 15000, sellPrice: 18000, priceEditable: false, barcode: '8996001500444', stock: 24, unit: 'pcs', category: 'Makanan Ringan', composition: '', image: '', catalogNote: '', createdAt: 1700000006000 },
+    {
+      id: 'p-1',
+      name: 'Aqua',
+      sku: 'AQ-01',
+      costPrice: 3500,
+      sellPrice: 5000,
+      priceEditable: false,
+      barcode: '8998899111001',
+      stock: 48,
+      unit: 'pcs',
+      category: 'Minuman',
+      composition: '',
+      image: '',
+      catalogNote: 'Air mineral 600ml',
+      createdAt: 1700000001000,
+    },
+    {
+      id: 'p-2',
+      name: 'Bengbeng box 2rb',
+      sku: 'BB-02',
+      costPrice: 32500,
+      sellPrice: 37500,
+      priceEditable: false,
+      barcode: '8996001300121',
+      stock: 15,
+      unit: 'box',
+      category: 'Makanan Ringan',
+      composition: '',
+      image: '',
+      catalogNote: '1 box isi 20 pcs',
+      createdAt: 1700000002000,
+    },
+    {
+      id: 'p-3',
+      name: 'Chitop B',
+      sku: 'CT-03',
+      costPrice: 15500,
+      sellPrice: 18000,
+      priceEditable: false,
+      barcode: '8996001300222',
+      stock: 20,
+      unit: 'pcs',
+      category: 'Makanan Ringan',
+      composition: '',
+      image: '',
+      catalogNote: '',
+      createdAt: 1700000003000,
+    },
+    {
+      id: 'p-4',
+      name: 'Le mineral Tanggung',
+      sku: 'LM-04',
+      costPrice: 2200,
+      sellPrice: 2500,
+      priceEditable: false,
+      barcode: '8996001600111',
+      stock: 60,
+      unit: 'pcs',
+      category: 'Minuman',
+      composition: '',
+      image: '',
+      catalogNote: 'Botol sedang 600ml',
+      createdAt: 1700000004000,
+    },
+    {
+      id: 'p-5',
+      name: 'Nextar box',
+      sku: 'NX-05',
+      costPrice: 15500,
+      sellPrice: 18000,
+      priceEditable: false,
+      barcode: '8996001400333',
+      stock: 18,
+      unit: 'box',
+      category: 'Makanan Ringan',
+      composition: '',
+      image: '',
+      catalogNote: '',
+      createdAt: 1700000005000,
+    },
+    {
+      id: 'p-6',
+      name: 'Qtela',
+      sku: 'QT-06',
+      costPrice: 15000,
+      sellPrice: 18000,
+      priceEditable: false,
+      barcode: '8996001500444',
+      stock: 24,
+      unit: 'pcs',
+      category: 'Makanan Ringan',
+      composition: '',
+      image: '',
+      catalogNote: '',
+      createdAt: 1700000006000,
+    },
   ],
   customers: [
     { id: 'cust-1', name: 'Bu Sari', phone: '081344556677', address: 'Jl. Melati No. 12', note: 'Langganan warung' },
@@ -149,13 +250,59 @@ export function saveAppData(data: AppData): void {
     if (typeof indexedDB !== 'undefined') {
       const req = indexedDB.open(IDB_NAME, 1);
       req.onupgradeneeded = () => {
-        if (!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE);
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+          req.result.createObjectStore(IDB_STORE);
+        }
       };
       req.onsuccess = () => {
-        try { req.result.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put(data, 'latest'); } catch {}
+        try {
+          const tx = req.result.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).put(data, 'latest');
+        } catch {
+          // ignore
+        }
       };
     }
-  } catch {}
+  } catch {
+    // ignore
+  }
+}
+
+export function loadActiveDraft(): ActiveOrderDraft {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return EMPTY_DRAFT;
+    const parsed = JSON.parse(raw) as Partial<ActiveOrderDraft>;
+    return {
+      ...EMPTY_DRAFT,
+      ...parsed,
+      items: Array.isArray(parsed.items) ? parsed.items : [],
+      customerId: parsed.customerId ?? null,
+      customerName: parsed.customerName || 'Umum',
+      discount: Number(parsed.discount) || 0,
+      shipping: Number(parsed.shipping) || 0,
+      note: parsed.note || '',
+      progressStatus: parsed.progressStatus || 'antri',
+    };
+  } catch {
+    return EMPTY_DRAFT;
+  }
+}
+
+export function saveActiveDraft(draft: ActiveOrderDraft): void {
+  try {
+    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearActiveDraft(): void {
+  try {
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
 }
 
 export function formatNumber(n: number): string {
@@ -173,7 +320,9 @@ export function formatMoney(n: number, symbol = 'Rp', space = false, right = fal
 export function formatDateShort(ts: number): string {
   const d = new Date(ts);
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()} ${hh}:${mm}`;
 }
 
 export function formatTimeOnly(ts: number): string {

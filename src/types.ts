@@ -69,6 +69,16 @@ export interface CartItem {
   unit: string;
 }
 
+export interface ActiveOrderDraft {
+  items: CartItem[];
+  customerId: string | null;
+  customerName: string;
+  discount: number;
+  shipping: number;
+  note: string;
+  progressStatus: ProgressStatus;
+}
+
 export interface SavedQuickCart {
   id: string;
   name: string;
