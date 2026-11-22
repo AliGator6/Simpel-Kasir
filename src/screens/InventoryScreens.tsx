@@ -29,6 +29,7 @@ import {
   formatMoney,
   parseProductsFromCsv,
 } from '../utils/storage';
+import { saveExportFile } from '../utils/printer';
 
 interface InventoryProps {
   screen: 'products' | 'product_form' | 'quick_tx' | 'customers' | 'master' | 'catalog';
@@ -135,17 +136,17 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
   // 1. PRODUK LIST
   // =========================================================
   if (screen === 'products') {
-    const handleExportCsv = () => {
+    const handleExportCsv = async () => {
       const csv = exportProductsToCsv(data.products);
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `produk_${data.store.name.toLowerCase().replace(/\s+/g, '_')}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setShowCsvMenu(false);
-      notify('Data produk diekspor ke CSV');
+      const safeStore = data.store.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+      try {
+        const res = await saveExportFile(`produk_${safeStore}.csv`, csv, 'text/csv;charset=utf-8;');
+        setShowCsvMenu(false);
+        notify(res.isNative ? `Tersimpan di ${res.savedPath}` : 'Data produk diekspor ke CSV');
+      } catch (err) {
+        setShowCsvMenu(false);
+        notify((err as Error).message || 'Gagal mengekspor CSV');
+      }
     };
 
     const handleImportCsv = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -158,11 +159,24 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
           notify('File CSV kosong atau format tidak sesuai');
           return;
         }
-        onUpdateData((prev) => ({
-          ...prev,
-          products: [...prev.products, ...imported],
-        }));
-        notify(`${imported.length} produk berhasil diimpor`);
+        onUpdateData((prev) => {
+          const unitSet = new Set(prev.master.units);
+          const catSet = new Set(prev.master.categories);
+          imported.forEach((p) => {
+            if (p.unit) unitSet.add(p.unit);
+            if (p.category) catSet.add(p.category);
+          });
+          return {
+            ...prev,
+            products: imported,
+            master: {
+              ...prev.master,
+              units: Array.from(unitSet),
+              categories: Array.from(catSet),
+            },
+          };
+        });
+        notify(`${imported.length} produk diimpor (menggantikan daftar sebelumnya)`);
       };
       reader.readAsText(file);
       e.target.value = '';
@@ -216,7 +230,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                     onClick={() => csvInputRef.current?.click()}
                     className="w-full px-4 py-2.5 text-left text-sm font-medium hover:bg-slate-100 dark:hover:bg-[#1E2A32]"
                   >
-                    Impor Data Produk (CSV)
+                    Impor Produk CSV (Ganti Semua)
                   </button>
                   <button
                     type="button"
@@ -233,7 +247,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
               <input
                 ref={csvInputRef}
                 type="file"
-                accept=".csv,text/csv"
+                accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel"
                 className="hidden"
                 onChange={handleImportCsv}
               />
@@ -277,7 +291,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                   {(data.productSettings.useSku || data.productSettings.useStock) && (
                     <p className="mt-0.5 text-xs text-slate-400">
                       {data.productSettings.useSku && p.sku ? p.sku : ''}
-                      {data.productSettings.useSku && p.sku && data.productSettings.useStock ? ' · ' : ''}
+                      {data.productSettings.useSku && p.sku && data.productSettings.useStock ? ' Â· ' : ''}
                       {data.productSettings.useStock ? `Stok: ${p.stock} ${p.unit || ''}` : ''}
                     </p>
                   )}
@@ -656,7 +670,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
               </div>
               <p className="font-display mt-4 text-base font-semibold">Belum ada Transaksi Cepat tersimpan</p>
               <p className="mt-1 max-w-xs text-xs text-slate-500">
-                Pilih produk di Transaksi Baru → buka keranjang → ketuk ikon Disket di kanan atas untuk menyimpan paket/pesanan cepat.
+                Pilih produk di Transaksi Baru â†’ buka keranjang â†’ ketuk ikon Disket di kanan atas untuk menyimpan paket/pesanan cepat.
               </p>
               <button
                 type="button"
@@ -685,7 +699,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                         {qc.items.map((i) => `${i.name} (${i.qty})`).join(', ')}
                       </p>
                       <p className="mt-1 text-sm font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
-                        {formatMoney(total, data.currencySymbol)} · {formatDateShort(qc.updatedAt)}
+                        {formatMoney(total, data.currencySymbol)} Â· {formatDateShort(qc.updatedAt)}
                       </p>
                     </button>
                     <button

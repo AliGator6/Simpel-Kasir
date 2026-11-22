@@ -7,13 +7,16 @@ import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothSocket;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Base64;
 
 import androidx.core.app.ActivityCompat;
@@ -27,6 +30,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
@@ -66,6 +71,19 @@ public class BluetoothPrinterPlugin extends Plugin {
     private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private BroadcastReceiver activeDiscoveryReceiver = null;
+    private BroadcastReceiver btStateReceiver = null;
+
+    // Persistent keep-alive socket for instant printing & low battery overhead
+    private final Object socketLock = new Object();
+    private BluetoothSocket activeSocket = null;
+    private String activeAddress = null;
+    private volatile String preferredPrinterAddress = null;
+
+    @Override
+    public void load() {
+        super.load();
+        registerBtStateMonitor();
+    }
 
     private BluetoothAdapter getAdapter() {
         BluetoothManager manager = (BluetoothManager) getContext().getSystemService(Context.BLUETOOTH_SERVICE);
@@ -96,6 +114,64 @@ public class BluetoothPrinterPlugin extends Plugin {
         } else {
             requestPermissionForAlias("bluetoothLegacy", call, callbackName);
         }
+    }
+
+    private void registerBtStateMonitor() {
+        if (btStateReceiver != null) return;
+        btStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+                if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                    int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+                    if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                        closeActiveSocket();
+                    } else if (state == BluetoothAdapter.STATE_ON && preferredPrinterAddress != null) {
+                        trySilentAutoConnect(preferredPrinterAddress);
+                    }
+                } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+                    @SuppressWarnings("deprecation")
+                    BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (dev != null && dev.getAddress() != null && dev.getAddress().equals(activeAddress)) {
+                        closeActiveSocket();
+                    }
+                } else if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
+                    @SuppressWarnings("deprecation")
+                    BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (dev != null && preferredPrinterAddress != null && preferredPrinterAddress.equals(dev.getAddress())) {
+                        trySilentAutoConnect(preferredPrinterAddress);
+                    }
+                }
+            }
+        };
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+        filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getContext().registerReceiver(btStateReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                getContext().registerReceiver(btStateReceiver, filter);
+            }
+        } catch (Exception ignored) {
+            btStateReceiver = null;
+        }
+    }
+
+    private void trySilentAutoConnect(String address) {
+        if (address == null || address.isEmpty() || !hasConnectPermissions()) return;
+        executor.execute(() -> {
+            BluetoothAdapter adapter = getAdapter();
+            if (adapter == null || !adapter.isEnabled()) return;
+            try {
+                ensureConnectedSocket(adapter, address);
+            } catch (Exception ignored) {
+                // Silent failure when printer is powered off (no battery drain retries)
+            }
+        });
     }
 
     @PluginMethod
@@ -215,7 +291,6 @@ public class BluetoothPrinterPlugin extends Plugin {
         executor.execute(() -> {
             Map<String, JSObject> foundMap = new LinkedHashMap<>();
 
-            // 1. Masukkan semua perangkat yang sudah di-pair (bonded)
             try {
                 Set<BluetoothDevice> bonded = adapter.getBondedDevices();
                 if (bonded != null) {
@@ -228,7 +303,6 @@ public class BluetoothPrinterPlugin extends Plugin {
                 return;
             }
 
-            // 2. Jalankan Bluetooth Discovery untuk menangkap printer baru yang belum di-pair
             if (runDiscovery && hasScanPermissions()) {
                 CountDownLatch latch = new CountDownLatch(1);
                 cleanupDiscoveryReceiver();
@@ -272,8 +346,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                         adapter.startDiscovery();
                     } catch (SecurityException ignored) {}
 
-                    // Tunggu maksimal 4.5 detik agar tidak terasa terlalu lama
-                    latch.await(4500, TimeUnit.MILLISECONDS);
+                    latch.await(4000, TimeUnit.MILLISECONDS);
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 } finally {
@@ -286,7 +359,6 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
             }
 
-            // 3. Urutkan: Printer + Bonded paling atas
             JSArray arr = new JSArray();
             for (JSObject item : foundMap.values()) {
                 if (item.optBoolean("isPrinter", false) && item.optBoolean("bonded", false)) {
@@ -316,6 +388,54 @@ public class BluetoothPrinterPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void autoConnect(PluginCall call) {
+        String address = call.getString("address");
+        if (address == null || address.isEmpty()) {
+            JSObject res = new JSObject();
+            res.put("ok", false);
+            call.resolve(res);
+            return;
+        }
+        preferredPrinterAddress = address;
+
+        if (!hasConnectPermissions()) {
+            JSObject res = new JSObject();
+            res.put("ok", false);
+            res.put("reason", "no_permission");
+            call.resolve(res);
+            return;
+        }
+
+        executor.execute(() -> {
+            JSObject res = new JSObject();
+            BluetoothAdapter adapter = getAdapter();
+            if (adapter == null || !adapter.isEnabled()) {
+                res.put("ok", false);
+                res.put("reason", "bt_off");
+                call.resolve(res);
+                return;
+            }
+            try {
+                ensureConnectedSocket(adapter, address);
+                res.put("ok", true);
+            } catch (Exception e) {
+                res.put("ok", false);
+                res.put("reason", e.getMessage());
+            }
+            call.resolve(res);
+        });
+    }
+
+    @PluginMethod
+    public void disconnect(PluginCall call) {
+        preferredPrinterAddress = null;
+        closeActiveSocket();
+        JSObject ok = new JSObject();
+        ok.put("ok", true);
+        call.resolve(ok);
+    }
+
+    @PluginMethod
     public void testConnection(PluginCall call) {
         if (!hasConnectPermissions()) {
             requestBtPermissions(call, "testConnectionPermCallback");
@@ -339,23 +459,21 @@ public class BluetoothPrinterPlugin extends Plugin {
             call.reject("Alamat printer kosong.");
             return;
         }
+        preferredPrinterAddress = address;
         executor.execute(() -> {
             BluetoothAdapter adapter = getAdapter();
             if (adapter == null || !adapter.isEnabled()) {
                 call.reject("Bluetooth HP tidak aktif.");
                 return;
             }
-            BluetoothSocket socket = null;
             try {
-                BluetoothDevice device = adapter.getRemoteDevice(address);
-                socket = connectWithFallback(adapter, device);
+                ensureConnectedSocket(adapter, address);
                 JSObject ok = new JSObject();
                 ok.put("ok", true);
                 call.resolve(ok);
             } catch (Exception e) {
+                closeActiveSocket();
                 call.reject("Gagal terhubung ke printer (" + address + "). Pastikan printer menyala & tidak terhubung ke HP lain. Detail: " + e.getMessage());
-            } finally {
-                closeQuietly(socket);
             }
         });
     }
@@ -385,6 +503,7 @@ public class BluetoothPrinterPlugin extends Plugin {
             call.reject("Alamat printer atau data cetak kosong.");
             return;
         }
+        preferredPrinterAddress = address;
         byte[] data = Base64.decode(b64, Base64.DEFAULT);
         sendRawBytes(address, data, call);
     }
@@ -410,18 +529,110 @@ public class BluetoothPrinterPlugin extends Plugin {
     private void runTestPrintInternal(PluginCall call) {
         String address = call.getString("address");
         String paperWidth = call.getString("paperWidth", "58");
+        int bottomMm = call.getInt("bottomFeedMm", 5);
         if (address == null || address.isEmpty()) {
             call.reject("Pilih printer terlebih dahulu.");
             return;
         }
+        preferredPrinterAddress = address;
         String dash = "80".equals(paperWidth) ? "------------------------------------------------\n" : "--------------------------------\n";
-        String sample =
-            "\u001B@\u001Ba\u0001\u001BE\u0001SimpelKasir\n\u001BE\u0000" +
+        byte[] head = (
+            "\u001B@\u001B3\u001B\u001Ba\u0001\u001BE\u0001SimpelKasir\n\u001BE\u0000" +
             "TEST PRINT BERHASIL\n" +
             dash +
-            "Kertas: " + paperWidth + " mm\n" +
-            "Printer Bluetooth Siap!\n\n\n\n";
-        sendRawBytes(address, sample.getBytes(StandardCharsets.US_ASCII), call);
+            "Kertas: " + paperWidth + " mm | Bawah: " + bottomMm + " mm\n" +
+            "Printer Siap Cetak Cepat!\n"
+        ).getBytes(StandardCharsets.US_ASCII);
+
+        int dots = Math.max(0, bottomMm) * 8;
+        int extraFeeds = (dots > 0 ? ((dots / 240) + (dots % 240 > 0 ? 1 : 0)) * 3 : 0);
+        byte[] payload = new byte[head.length + extraFeeds];
+        System.arraycopy(head, 0, payload, 0, head.length);
+        int pos = head.length;
+        while (dots > 0) {
+            int step = Math.min(240, dots);
+            payload[pos++] = 0x1B;
+            payload[pos++] = 0x4A;
+            payload[pos++] = (byte) step;
+            dots -= step;
+        }
+        sendRawBytes(address, payload, call);
+    }
+
+    @PluginMethod
+    public void saveFileToDownloads(PluginCall call) {
+        String fileName = call.getString("fileName");
+        String content = call.getString("content");
+        String mimeType = call.getString("mimeType", "application/octet-stream");
+        if (fileName == null || fileName.isEmpty() || content == null) {
+            call.reject("Nama file atau isi kosong.");
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentResolver resolver = getContext().getContentResolver();
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (uri == null) {
+                        throw new IOException("Gagal membuat file di MediaStore Download.");
+                    }
+                    try (OutputStream os = resolver.openOutputStream(uri)) {
+                        if (os == null) throw new IOException("Stream Download null.");
+                        os.write(bytes);
+                        os.flush();
+                    }
+                } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (!dir.exists()) dir.mkdirs();
+                    File outFile = new File(dir, fileName);
+                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                        fos.write(bytes);
+                        fos.flush();
+                    }
+                }
+                JSObject ok = new JSObject();
+                ok.put("ok", true);
+                ok.put("path", "Download/" + fileName);
+                call.resolve(ok);
+            } catch (Exception e) {
+                call.reject("Gagal menyimpan ke folder Download: " + e.getMessage());
+            }
+        });
+    }
+
+    private BluetoothSocket ensureConnectedSocket(BluetoothAdapter adapter, String address) throws Exception {
+        synchronized (socketLock) {
+            if (activeSocket != null && address.equals(activeAddress) && activeSocket.isConnected()) {
+                return activeSocket;
+            }
+            closeActiveSocketLocked();
+            BluetoothDevice device = adapter.getRemoteDevice(address);
+            BluetoothSocket s = connectWithFallback(adapter, device);
+            activeSocket = s;
+            activeAddress = address;
+            return s;
+        }
+    }
+
+    private void closeActiveSocket() {
+        synchronized (socketLock) {
+            closeActiveSocketLocked();
+        }
+    }
+
+    private void closeActiveSocketLocked() {
+        if (activeSocket != null) {
+            try {
+                activeSocket.close();
+            } catch (Exception ignored) {}
+            activeSocket = null;
+        }
+        activeAddress = null;
     }
 
     private BluetoothSocket connectWithFallback(BluetoothAdapter adapter, BluetoothDevice device) throws Exception {
@@ -434,7 +645,7 @@ public class BluetoothPrinterPlugin extends Plugin {
         try {
             if (device.getBondState() == BluetoothDevice.BOND_NONE) {
                 device.createBond();
-                Thread.sleep(350);
+                Thread.sleep(250);
             }
         } catch (Exception ignored) {}
 
@@ -470,11 +681,21 @@ public class BluetoothPrinterPlugin extends Plugin {
         throw (lastError != null) ? lastError : new IOException("Tidak dapat membuka koneksi RFCOMM ke printer.");
     }
 
-    private void closeQuietly(BluetoothSocket socket) {
-        if (socket != null) {
-            try {
-                socket.close();
-            } catch (Exception ignored) {}
+    private void writePayloadFast(BluetoothSocket socket, byte[] payload) throws Exception {
+        OutputStream os = socket.getOutputStream();
+        if (payload.length <= 1024) {
+            os.write(payload);
+            os.flush();
+            return;
+        }
+        int chunkSize = 1024;
+        for (int i = 0; i < payload.length; i += chunkSize) {
+            int len = Math.min(chunkSize, payload.length - i);
+            os.write(payload, i, len);
+            os.flush();
+            if (i + len < payload.length) {
+                Thread.sleep(5);
+            }
         }
     }
 
@@ -485,29 +706,31 @@ public class BluetoothPrinterPlugin extends Plugin {
                 call.reject("Bluetooth tidak aktif. Nyalakan Bluetooth di HP terlebih dahulu.");
                 return;
             }
-            BluetoothSocket socket = null;
             try {
-                BluetoothDevice device = adapter.getRemoteDevice(address);
-                socket = connectWithFallback(adapter, device);
-                Thread.sleep(100);
-
-                OutputStream os = socket.getOutputStream();
-                int chunkSize = 256;
-                for (int i = 0; i < payload.length; i += chunkSize) {
-                    int len = Math.min(chunkSize, payload.length - i);
-                    os.write(payload, i, len);
-                    os.flush();
-                    Thread.sleep(18);
+                boolean wasAlreadyConnected;
+                synchronized (socketLock) {
+                    wasAlreadyConnected = (activeSocket != null && address.equals(activeAddress) && activeSocket.isConnected());
                 }
-                Thread.sleep(300);
+                BluetoothSocket socket = ensureConnectedSocket(adapter, address);
+                if (!wasAlreadyConnected) {
+                    Thread.sleep(40);
+                }
+                try {
+                    writePayloadFast(socket, payload);
+                } catch (IOException writeErr) {
+                    // Socket might have gone stale if printer restarted -> reconnect once cleanly
+                    closeActiveSocket();
+                    socket = ensureConnectedSocket(adapter, address);
+                    Thread.sleep(40);
+                    writePayloadFast(socket, payload);
+                }
 
                 JSObject ok = new JSObject();
                 ok.put("ok", true);
                 call.resolve(ok);
             } catch (Exception e) {
+                closeActiveSocket();
                 call.reject("Gagal cetak ke printer: " + e.getMessage());
-            } finally {
-                closeQuietly(socket);
             }
         });
     }
@@ -515,6 +738,13 @@ public class BluetoothPrinterPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         cleanupDiscoveryReceiver();
+        if (btStateReceiver != null) {
+            try {
+                getContext().unregisterReceiver(btStateReceiver);
+            } catch (Exception ignored) {}
+            btStateReceiver = null;
+        }
+        closeActiveSocket();
         executor.shutdownNow();
         super.handleOnDestroy();
     }

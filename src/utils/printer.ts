@@ -12,9 +12,12 @@ export interface PairedDevice {
 interface NativePrinterPlugin {
   listPaired(): Promise<{ devices: PairedDevice[] }>;
   scanDevices?(): Promise<{ devices: PairedDevice[] }>;
+  autoConnect?(options: { address: string }): Promise<{ ok: boolean; reason?: string }>;
+  disconnect?(): Promise<{ ok: boolean }>;
   testConnection?(options: { address: string }): Promise<{ ok: boolean }>;
   printBytes(options: { address: string; base64: string }): Promise<{ ok: boolean }>;
-  testPrint(options: { address: string; paperWidth: string }): Promise<{ ok: boolean }>;
+  testPrint(options: { address: string; paperWidth: string; bottomFeedMm?: number }): Promise<{ ok: boolean }>;
+  saveFileToDownloads?(options: { fileName: string; content: string; mimeType: string }): Promise<{ ok: boolean; path?: string }>;
 }
 
 interface CapacitorBridgeWindow {
@@ -63,9 +66,13 @@ function getNativePrinter(): NativePrinterPlugin | null {
     cachedNativePrinter = {
       listPaired: () => np<{ devices: PairedDevice[] }>('BluetoothPrinter', 'listPaired', {}),
       scanDevices: () => np<{ devices: PairedDevice[] }>('BluetoothPrinter', 'scanDevices', {}),
+      autoConnect: (options) => np<{ ok: boolean; reason?: string }>('BluetoothPrinter', 'autoConnect', options),
+      disconnect: () => np<{ ok: boolean }>('BluetoothPrinter', 'disconnect', {}),
       testConnection: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testConnection', options),
       printBytes: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'printBytes', options),
       testPrint: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testPrint', options),
+      saveFileToDownloads: (options) =>
+        np<{ ok: boolean; path?: string }>('BluetoothPrinter', 'saveFileToDownloads', options),
     };
     return cachedNativePrinter;
   }
@@ -75,6 +82,41 @@ function getNativePrinter(): NativePrinterPlugin | null {
 
 export function isNativeAndroidPrinterAvailable(): boolean {
   return !!getNativePrinter();
+}
+
+export async function autoConnectBluetoothPrinter(address: string): Promise<boolean> {
+  if (!address) return false;
+  const native = getNativePrinter();
+  if (!native || typeof native.autoConnect !== 'function') return false;
+  try {
+    const res = await native.autoConnect({ address });
+    return Boolean(res?.ok);
+  } catch {
+    return false;
+  }
+}
+
+export async function saveExportFile(
+  fileName: string,
+  content: string,
+  mimeType: string
+): Promise<{ savedPath: string; isNative: boolean }> {
+  const native = getNativePrinter();
+  if (native && typeof native.saveFileToDownloads === 'function') {
+    const res = await native.saveFileToDownloads({ fileName, content, mimeType });
+    if (res?.ok) {
+      return { savedPath: res.path || `Download/${fileName}`, isNative: true };
+    }
+  }
+
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return { savedPath: fileName, isNative: false };
 }
 
 export async function scanPairedBluetoothPrinters(): Promise<PairedDevice[]> {
@@ -131,6 +173,15 @@ function padRow(left: string, right: string, cols: number): string {
   return l + ' '.repeat(spaces) + right;
 }
 
+function appendBottomFeedMm(bytes: number[], mm: number) {
+  let dots = Math.max(0, Math.round(mm)) * 8;
+  while (dots > 0) {
+    const step = Math.min(240, dots);
+    bytes.push(0x1b, 0x4a, step);
+    dots -= step;
+  }
+}
+
 export function buildEscPosReceiptBytes(
   tx: Transaction,
   store: StoreInfo,
@@ -146,7 +197,22 @@ export function buildEscPosReceiptBytes(
   const ESC = 0x1b;
   const GS = 0x1d;
 
+  // Initialize printer
   b.push(ESC, 0x40);
+
+  // Line spacing (ESC 3 n or ESC 2)
+  const spacing = printerCfg.lineSpacing ?? 'compact';
+  if (spacing === 'tight') {
+    b.push(ESC, 0x33, 24);
+  } else if (spacing === 'compact') {
+    b.push(ESC, 0x33, 27);
+  } else if (spacing === 'wide') {
+    b.push(ESC, 0x33, 36);
+  } else {
+    b.push(ESC, 0x32);
+  }
+
+  // Align center header
   b.push(ESC, 0x61, 0x01);
   b.push(ESC, 0x45, 0x01);
   if (receiptCfg.largeStoreName) b.push(GS, 0x21, 0x11);
@@ -156,8 +222,8 @@ export function buildEscPosReceiptBytes(
   if (store.address) pushText(store.address);
   if (store.city) pushText(store.city);
   if (store.phone) pushText(store.phone);
-  pushText('');
 
+  // Align left
   b.push(ESC, 0x61, 0x00);
   const idPart = receiptCfg.showTxIdMode === 'none' ? '' : `#${tx.receiptNo}`;
   pushText(padRow(formatDateShort(tx.createdAt), idPart, cols));
@@ -215,20 +281,22 @@ export function buildEscPosReceiptBytes(
     pushText(`Catatan: ${tx.note}`);
   }
 
-  pushText('');
-  if (receiptCfg.centerFooter) b.push(ESC, 0x61, 0x01);
-  if (store.footer) pushText(store.footer);
-  pushText('');
-  pushText('');
-  if (printerCfg.cutFeedExtra) {
-    pushText('');
-    pushText('');
+  if (store.footer) {
+    if (receiptCfg.centerFooter) b.push(ESC, 0x61, 0x01);
+    pushText(store.footer);
   }
+
+  // Exact bottom margin in mm (every 5mm = 40 dots on 203 DPI thermal printers)
+  const bottomMm = (printerCfg.bottomFeedMm ?? 5) + (printerCfg.cutFeedExtra ? 10 : 0);
+  appendBottomFeedMm(b, bottomMm);
 
   if (printerCfg.cashDrawer) {
     b.push(ESC, 0x70, 0x00, 0x19, 0xfa);
   }
-  b.push(GS, 0x56, 0x42, 0x00);
+  // Only issue GS V cutter feed on 80mm desktop printers; 58mm portable printers feed extra unwanted paper on GS V
+  if (printerCfg.paperWidth === '80') {
+    b.push(GS, 0x56, 0x42, 0x00);
+  }
 
   return new Uint8Array(b);
 }
@@ -268,10 +336,10 @@ function buildRasterGraphicEscPos(canvas: HTMLCanvasElement, printerCfg: Printer
     }
   }
 
-  raster.push(0x0a, 0x0a, 0x0a);
-  if (printerCfg.cutFeedExtra) raster.push(0x0a, 0x0a);
+  const bottomMm = (printerCfg.bottomFeedMm ?? 5) + (printerCfg.cutFeedExtra ? 10 : 0);
+  appendBottomFeedMm(raster, bottomMm);
   if (printerCfg.cashDrawer) raster.push(0x1b, 0x70, 0x00, 0x19, 0xfa);
-  raster.push(0x1d, 0x56, 0x42, 0x00);
+  if (printerCfg.paperWidth === '80') raster.push(0x1d, 0x56, 0x42, 0x00);
   return new Uint8Array(raster);
 }
 
@@ -322,6 +390,7 @@ export async function runTestPrint(printerCfg: PrinterSettings, storeName: strin
     await native.testPrint({
       address: printerCfg.selectedPrinterAddress,
       paperWidth: printerCfg.paperWidth,
+      bottomFeedMm: printerCfg.bottomFeedMm ?? 5,
     });
     return 'native';
   }

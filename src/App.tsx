@@ -14,6 +14,7 @@ import { PosFlowScreens } from './screens/PosScreens';
 import { InventoryScreens } from './screens/InventoryScreens';
 import { FinanceScreens } from './screens/FinanceScreens';
 import { SettingsScreens } from './screens/SettingsScreens';
+import { autoConnectBluetoothPrinter } from './utils/printer';
 
 declare global {
   interface Window {
@@ -45,6 +46,36 @@ export default function App() {
     saveActiveDraft(draft);
   }, [draft]);
 
+  // Event-driven auto-connect printer (zero polling -> ultra low battery usage)
+  const btAddress =
+    data.printerSettings.connectionType === 'bluetooth'
+      ? data.printerSettings.selectedPrinterAddress
+      : '';
+
+  useEffect(() => {
+    if (!btAddress) return;
+    const t = window.setTimeout(() => {
+      autoConnectBluetoothPrinter(btAddress);
+    }, 350);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        autoConnectBluetoothPrinter(btAddress);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(t);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [btAddress]);
+
+  useEffect(() => {
+    if (!btAddress) return;
+    if (screen === 'pos' || screen === 'cart' || screen === 'payment') {
+      autoConnectBluetoothPrinter(btAddress);
+    }
+  }, [btAddress, screen]);
+
   const notify = (msg: string) => {
     setToastMsg(msg);
     window.setTimeout(() => {
@@ -61,6 +92,7 @@ export default function App() {
     setScreen(next);
   };
 
+  // Android Taskbar / Hardware Back Button Guard & Hierarchical Navigation
   const stateRef = useRef({
     screen,
     prevScreen,
@@ -73,17 +105,20 @@ export default function App() {
     window.__handleAndroidBack = (): 'handled' | 'exit' => {
       const { screen: cur, prevScreen: prev, drawerOpen: isDrawer, draft: curDraft } = stateRef.current;
 
+      // 1. Close Drawer if open
       if (isDrawer) {
         setDrawerOpen(false);
         return 'handled';
       }
 
+      // 2. Close any open Modal / Dropdown / Sheet first
       const backEvent = new CustomEvent('simpelkasir-back-request', { cancelable: true });
       window.dispatchEvent(backEvent);
       if (backEvent.defaultPrevented) {
         return 'handled';
       }
 
+      // 3. Hierarchical back navigation (preserving cart draft at all times!)
       if (cur !== 'home') {
         let nextTarget: ScreenId = 'home';
         if (cur === 'payment') nextTarget = 'cart';
@@ -106,12 +141,14 @@ export default function App() {
         return 'handled';
       }
 
+      // 4. Already at Home: debounce rapid accidental double-tap from sub-screen
       const now = Date.now();
       if (now - lastNavToHomeAtRef.current < 700) {
         return 'handled';
       }
 
       const elapsedSinceFirstHomeTap = now - homeExitTapAtRef.current;
+      // Require deliberate 2nd tap between 250ms and 2200ms (prevents 1-finger accidental bounce)
       if (elapsedSinceFirstHomeTap >= 250 && elapsedSinceFirstHomeTap <= 2200) {
         return 'exit';
       }
@@ -368,7 +405,8 @@ export default function App() {
         screen === 'settings_receipt' ||
         screen === 'settings_printer' ||
         screen === 'settings_users' ||
-        screen === 'settings_store') && (
+        screen === 'settings_store' ||
+        screen === 'settings_backup') && (
         <SettingsScreens
           screen={screen}
           data={data}

@@ -18,14 +18,19 @@ import {
   CheckCircle2,
   UserPlus,
   Store,
+  Upload,
+  Download,
+  Share2,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { AppData, ScreenId } from '../types';
 import { TopBar, SwitchRow, useBackClose } from '../components/TopBar';
 import { NumericInput } from '../components/NumericInput';
-import { DEFAULT_APP_DATA } from '../utils/storage';
+import { DEFAULT_APP_DATA, exportProductsToCsv, parseProductsFromCsv } from '../utils/storage';
 import {
   PairedDevice,
   runTestPrint,
+  saveExportFile,
   scanPairedBluetoothPrinters,
   testBluetoothPrinterConnection,
 } from '../utils/printer';
@@ -37,6 +42,7 @@ interface SettingsProps {
     | 'settings_product'
     | 'settings_receipt'
     | 'settings_printer'
+    | 'settings_backup'
     | 'settings_users'
     | 'settings_store';
   data: AppData;
@@ -57,6 +63,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   notify,
 }) => {
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+  const csvImportRef = useRef<HTMLInputElement | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [scanningPrinter, setScanningPrinter] = useState(false);
   const [connectingAddr, setConnectingAddr] = useState<string | null>(null);
@@ -75,46 +82,110 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   useBackClose(showTaxModal, () => setShowTaxModal(false));
   useBackClose(showResetConfirm, () => setShowResetConfirm(false));
 
+  const handleBackupExport = async () => {
+    const json = JSON.stringify(data, null, 2);
+    const fileName = `SimpelKasir_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      const res = await saveExportFile(fileName, json, 'application/json');
+      notify(res.isNative ? `Backup tersimpan di ${res.savedPath}` : 'File backup berhasil diunduh');
+    } catch (err) {
+      notify((err as Error).message || 'Gagal menyimpan file backup');
+    }
+  };
+
+  const handleBackupShare = async () => {
+    const json = JSON.stringify(data, null, 2);
+    const fileName = `SimpelKasir_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      const file = new File([json], fileName, { type: 'application/json' });
+      const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+      if (typeof navigator.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
+        await navigator.share({
+          title: 'Backup SimpelKasir',
+          text: `Backup data ${data.store.name}`,
+          files: [file],
+        });
+        return;
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;
+    }
+    await handleBackupExport();
+  };
+
+  const handleBackupImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result || '')) as Partial<AppData>;
+        if (!parsed.products || !parsed.store) {
+          notify('Format file backup tidak valid');
+          return;
+        }
+        onUpdateData((prev) => ({
+          ...DEFAULT_APP_DATA,
+          ...prev,
+          ...parsed,
+        }));
+        notify('Data backup berhasil dipulihkan');
+      } catch {
+        notify('Gagal membaca file backup');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleCsvExport = async () => {
+    const csv = exportProductsToCsv(data.products);
+    const safeStore = data.store.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    try {
+      const res = await saveExportFile(`produk_${safeStore}.csv`, csv, 'text/csv;charset=utf-8;');
+      notify(res.isNative ? `CSV tersimpan di ${res.savedPath}` : 'Data produk diekspor ke CSV');
+    } catch (err) {
+      notify((err as Error).message || 'Gagal mengekspor CSV');
+    }
+  };
+
+  const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imported = parseProductsFromCsv(String(reader.result || ''));
+      if (imported.length === 0) {
+        notify('File CSV kosong atau format tidak sesuai');
+        return;
+      }
+      onUpdateData((prev) => {
+        const unitSet = new Set(prev.master.units);
+        const catSet = new Set(prev.master.categories);
+        imported.forEach((p) => {
+          if (p.unit) unitSet.add(p.unit);
+          if (p.category) catSet.add(p.category);
+        });
+        return {
+          ...prev,
+          products: imported,
+          master: {
+            ...prev.master,
+            units: Array.from(unitSet),
+            categories: Array.from(catSet),
+          },
+        };
+      });
+      notify(`${imported.length} produk diimpor (menggantikan daftar sebelumnya)`);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   // =========================================================
   // 1. HUB PENGATURAN (GriyoPos 3-Column Grid Layout)
   // =========================================================
   if (screen === 'settings') {
-    const handleBackupExport = () => {
-      const json = JSON.stringify(data, null, 2);
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `SimpelKasir_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      notify('File backup berhasil diunduh');
-    };
-
-    const handleBackupImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        try {
-          const parsed = JSON.parse(String(reader.result || '')) as Partial<AppData>;
-          if (!parsed.products || !parsed.store) {
-            notify('Format file backup tidak valid');
-            return;
-          }
-          onUpdateData((prev) => ({
-            ...DEFAULT_APP_DATA,
-            ...prev,
-            ...parsed,
-          }));
-          notify('Data backup berhasil dipulihkan');
-        } catch {
-          notify('Gagal membaca file backup');
-        }
-      };
-      reader.readAsText(file);
-      e.target.value = '';
-    };
 
     const gridButtons: {
       label: string;
@@ -200,7 +271,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
         label: 'Backup Restore',
         icon: <Database className="h-6 w-6" />,
         tone: 'emerald',
-        onClick: handleBackupExport,
+        onClick: () => onNavigate('settings_backup'),
       },
       {
         label: 'Login User',
@@ -237,7 +308,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
         <TopBar title="Pengaturan" mode="menu" onLeftClick={onOpenDrawer} />
         <div className="mx-auto w-full max-w-4xl px-4 py-4">
           <p className="text-center text-xs font-medium text-slate-500 dark:text-slate-400">
-            SimpelKasir · v{data.version}
+            SimpelKasir Â· v{data.version}
           </p>
 
           <div className="mt-5 grid grid-cols-3 gap-y-6 gap-x-3">
@@ -279,7 +350,13 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
               );
             })}
           </div>
-          <input ref={backupInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleBackupImport} />
+          <input
+            ref={backupInputRef}
+            type="file"
+            accept=".json,application/json,text/plain"
+            className="hidden"
+            onChange={handleBackupImport}
+          />
         </div>
 
         {showCurrencyModal && (
@@ -674,10 +751,76 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
             onChange={(v) => setPr({ cashDrawer: v })}
           />
           <SwitchRow
-            label="Jika hasil cetak terlalu panjang di bagian bawah, hidupkan opsi ini"
+            label="Tambahan jarak potong bawah (+10 mm)"
             checked={pr.cutFeedExtra}
             onChange={(v) => setPr({ cutFeedExtra: v })}
           />
+
+          {/* Jarak Sisa Kertas Bawah (kelipatan 5mm) */}
+          <div className="px-4 py-3.5 border-b border-[#EAECE8] dark:border-[#223039]">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold">Jarak Sisa Kertas Bawah</p>
+              <span className="font-mono-tabular text-xs font-bold text-[#165B49] dark:text-[#4BB89A]">
+                {pr.bottomFeedMm ?? 5} mm
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Atur panjang kertas kosong di bawah struk (tiap 5 mm).
+            </p>
+            <div className="mt-2.5 grid grid-cols-7 gap-1.5">
+              {[0, 5, 10, 15, 20, 25, 30].map((mm) => {
+                const active = (pr.bottomFeedMm ?? 5) === mm;
+                return (
+                  <button
+                    key={mm}
+                    type="button"
+                    onClick={() => setPr({ bottomFeedMm: mm })}
+                    className={`rounded-xl border py-2 text-xs font-bold tabular-nums transition ${
+                      active
+                        ? 'border-[#165B49] bg-[#165B49] text-white dark:border-[#4BB89A] dark:bg-[#165B49]'
+                        : 'border-[#D4DBD5] dark:border-[#2A3944] text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    {mm}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Jarak Antar Baris Teks */}
+          <div className="px-4 py-3.5 border-b border-[#EAECE8] dark:border-[#223039]">
+            <p className="text-sm font-semibold">Jarak Antar Baris Teks</p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Pilihan Rapat menghemat pemakaian kertas struk.
+            </p>
+            <div className="mt-2.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {(
+                [
+                  { id: 'tight', label: 'Sangat Rapat' },
+                  { id: 'compact', label: 'Rapat' },
+                  { id: 'normal', label: 'Sedang' },
+                  { id: 'wide', label: 'Lega' },
+                ] as const
+              ).map((opt) => {
+                const active = (pr.lineSpacing ?? 'compact') === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setPr({ lineSpacing: opt.id })}
+                    className={`rounded-xl border px-3 py-2 text-xs font-bold transition ${
+                      active
+                        ? 'border-[#165B49] bg-[#165B49] text-white dark:border-[#4BB89A] dark:bg-[#165B49]'
+                        : 'border-[#D4DBD5] dark:border-[#2A3944] text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {/* Paired & Discovered Bluetooth List + Refresh */}
           <div className="px-4 py-3 border-b border-[#EAECE8] dark:border-[#223039]">
@@ -726,7 +869,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
 
             {scanningPrinter && (
               <p className="mt-2.5 text-xs font-medium text-[#165B49] dark:text-[#4BB89A]">
-                Sedang memindai perangkat Bluetooth di sekitar (±4 detik)...
+                Sedang memindai perangkat Bluetooth di sekitar (Â±4 detik)...
               </p>
             )}
 
@@ -797,6 +940,119 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
               TEST PRINT
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================================
+  // 5B. BACKUP, RESTORE & MIGRASI CSV
+  // =========================================================
+  if (screen === 'settings_backup') {
+    return (
+      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418] pb-10">
+        <TopBar title="Backup & Restore" mode="back" onLeftClick={onBack} />
+        <div className="mx-auto w-full max-w-4xl p-4 space-y-4">
+          {/* Card 1: Backup Penuh */}
+          <div className="surface-card rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <Database className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
+              <div>
+                <h3 className="font-display text-sm font-bold">Backup Penuh Data Toko (.json)</h3>
+                <p className="text-xs text-slate-500">
+                  Simpan seluruh produk ({data.products.length}), transaksi ({data.transactions.length}), pelanggan, dan pengaturan ke folder Download.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={handleBackupExport}
+                className="btn-lux-primary flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+              >
+                <Download className="h-4 w-4" />
+                Simpan Backup
+              </button>
+              <button
+                type="button"
+                onClick={handleBackupShare}
+                className="btn-lux-gold flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+              >
+                <Share2 className="h-4 w-4" />
+                Bagikan File
+              </button>
+            </div>
+          </div>
+
+          {/* Card 2: Restore Backup JSON */}
+          <div className="surface-card rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <Save className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
+              <div>
+                <h3 className="font-display text-sm font-bold">Pulihkan Backup (.json)</h3>
+                <p className="text-xs text-slate-500">
+                  Kembalikan semua data toko dari file backup SimpelKasir sebelumnya.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => backupInputRef.current?.click()}
+              className="btn-lux-obsidian flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+            >
+              <Upload className="h-4 w-4" />
+              Pilih File Backup (.json)
+            </button>
+          </div>
+
+          {/* Card 3: Impor / Ekspor Produk CSV (GriyoPos / Excel) */}
+          <div className="surface-card rounded-2xl p-4 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <FileSpreadsheet className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
+              <div>
+                <h3 className="font-display text-sm font-bold">Produk CSV (GriyoPos / Excel)</h3>
+                <p className="text-xs text-slate-500">
+                  Mendukung file ekspor CSV dari GriyoPos atau Excel. Saat impor, seluruh daftar produk saat ini akan diganti dengan data dari CSV.
+                </p>
+              </div>
+            </div>
+            <div className="rounded-xl bg-[#F3F5F2] dark:bg-[#1B262E] p-3 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Tips GriyoPos: di aplikasi GriyoPos pilih <b>Ekspor CSV</b> produk, lalu pilih file <code className="font-mono">.csv</code> hasil ekspornya lewat tombol di bawah.
+            </div>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => csvImportRef.current?.click()}
+                className="btn-lux-primary flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+              >
+                <Upload className="h-4 w-4" />
+                Impor CSV (Ganti Semua)
+              </button>
+              <button
+                type="button"
+                onClick={handleCsvExport}
+                className="btn-lux-soft flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+              >
+                <Download className="h-4 w-4" />
+                Ekspor Produk (.csv)
+              </button>
+            </div>
+          </div>
+
+          <input
+            ref={backupInputRef}
+            type="file"
+            accept=".json,application/json,text/plain"
+            className="hidden"
+            onChange={handleBackupImport}
+          />
+          <input
+            ref={csvImportRef}
+            type="file"
+            accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel"
+            className="hidden"
+            onChange={handleCsvImport}
+          />
         </div>
       </div>
     );

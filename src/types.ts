@@ -20,7 +20,8 @@ export type ScreenId =
   | 'settings_receipt'
   | 'settings_printer'
   | 'settings_users'
-  | 'settings_store';
+  | 'settings_store'
+  | 'settings_backup';
 
 export type PaymentStatus = 'lunas' | 'kurang' | 'belum_dibayar';
 export type ProgressStatus = 'antri' | 'proses' | 'selesai' | 'diambil';
@@ -208,6 +209,8 @@ export interface PrinterSettings {
   printTwice: boolean;
   cashDrawer: boolean;
   cutFeedExtra: boolean;
+  bottomFeedMm: number;
+  lineSpacing: 'tight' | 'compact' | 'normal' | 'wide';
   language: 'standard';
   selectedPrinterName: string;
   selectedPrinterAddress: string;

@@ -94,6 +94,8 @@ export const DEFAULT_APP_DATA: AppData = {
     printTwice: false,
     cashDrawer: false,
     cutFeedExtra: false,
+    bottomFeedMm: 5,
+    lineSpacing: 'compact',
     language: 'standard',
     selectedPrinterName: '',
     selectedPrinterAddress: '',
@@ -247,6 +249,7 @@ export function loadAppData(): AppData {
 export function saveAppData(data: AppData): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    // Mirror asynchronously to IndexedDB for resilience on mobile WebView
     if (typeof indexedDB !== 'undefined') {
       const req = indexedDB.open(IDB_NAME, 1);
       req.onupgradeneeded = () => {
@@ -259,12 +262,12 @@ export function saveAppData(data: AppData): void {
           const tx = req.result.transaction(IDB_STORE, 'readwrite');
           tx.objectStore(IDB_STORE).put(data, 'latest');
         } catch {
-          // ignore
+          // ignore silent mirror failures
         }
       };
     }
   } catch {
-    // ignore
+    // ignore storage quota errors gracefully
   }
 }
 
@@ -293,7 +296,7 @@ export function saveActiveDraft(draft: ActiveOrderDraft): void {
   try {
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
   } catch {
-    // ignore
+    // ignore storage quota errors gracefully
   }
 }
 
@@ -357,29 +360,105 @@ export function exportProductsToCsv(products: Product[]): string {
   return [header, ...rows].join('\n');
 }
 
+function splitCsvRow(row: string, delimiter: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === '"') {
+      if (inQuotes && row[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === delimiter && !inQuotes) {
+      out.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function parseFlexibleNumber(raw: string | undefined): number {
+  if (!raw) return 0;
+  let cleaned = raw.replace(/rp|idr|\s+/gi, '').trim();
+  if (!cleaned) return 0;
+  // Indonesian thousands separator pattern: e.g. 15.000 or 1.250.000
+  if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(cleaned)) {
+    cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  } else if (/^-?\d+(,\d{1,2})$/.test(cleaned)) {
+    cleaned = cleaned.replace(',', '.');
+  } else {
+    cleaned = cleaned.replace(/,/g, '');
+  }
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function parseProductsFromCsv(csvText: string): Product[] {
-  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) return [];
+  const cleanText = csvText.replace(/^\uFEFF/, '');
+  const lines = cleanText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+
+  const firstLine = lines[0];
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  const semiCount = (firstLine.match(/;/g) || []).length;
+  const tabCount = (firstLine.match(/\t/g) || []).length;
+  const delimiter = tabCount > commaCount && tabCount > semiCount ? '\t' : semiCount > commaCount ? ';' : ',';
+
+  const firstCols = splitCsvRow(firstLine, delimiter).map((h) => h.toLowerCase().trim());
+
+  const findCol = (aliases: string[]) =>
+    firstCols.findIndex((h) => aliases.some((a) => h === a || h.includes(a)));
+
+  const idxName = findCol(['nama produk', 'nama barang', 'nama', 'produk', 'barang', 'item', 'name']);
+  const idxSku = findCol(['kode produk', 'kode barang', 'sku', 'kode', 'code']);
+  const idxCost = findCol(['harga pokok', 'harga beli', 'harga modal', 'modal', 'hpp', 'pokok', 'beli', 'cost']);
+  const idxSell = findCol(['harga jual', 'harga1', 'harga', 'jual', 'price', 'sell']);
+  const idxStock = findCol(['stok', 'stock', 'qty', 'jumlah', 'sisa']);
+  const idxUnit = findCol(['satuan', 'unit', 'uom']);
+  const idxCat = findCol(['kategori', 'grup produk', 'grup', 'group', 'category']);
+  const idxBarcode = findCol(['barcode', 'ean', 'upc']);
+  const idxNote = findCol(['keterangan', 'catatan', 'deskripsi', 'note', 'desc']);
+
+  const hasHeader = idxName !== -1 || idxSell !== -1 || idxCost !== -1 || idxStock !== -1;
+  const startRow = hasHeader ? 1 : 0;
+
   const out: Product[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map((c) => c.replace(/^"|"$/g, '').replace(/""/g, '"')) || lines[i].split(',');
-    const name = (cols[0] || '').trim();
+  const baseTs = Date.now();
+  for (let i = startRow; i < lines.length; i++) {
+    const cols = splitCsvRow(lines[i], delimiter);
+    const name = (cols[hasHeader && idxName !== -1 ? idxName : 0] || '').trim();
     if (!name) continue;
+    const sku = (cols[hasHeader && idxSku !== -1 ? idxSku : 1] || '').trim();
+    const costPrice = parseFlexibleNumber(cols[hasHeader && idxCost !== -1 ? idxCost : 2]);
+    const sellPrice = parseFlexibleNumber(cols[hasHeader && idxSell !== -1 ? idxSell : 3]);
+    const stock = parseFlexibleNumber(cols[hasHeader && idxStock !== -1 ? idxStock : 4]);
+    const unit = (cols[hasHeader && idxUnit !== -1 ? idxUnit : 5] || 'pcs').trim() || 'pcs';
+    const category = (cols[hasHeader && idxCat !== -1 ? idxCat : 6] || 'Lainnya').trim() || 'Lainnya';
+    const barcode = (cols[hasHeader && idxBarcode !== -1 ? idxBarcode : 7] || '').trim();
+    const catalogNote = (cols[hasHeader && idxNote !== -1 ? idxNote : 8] || '').trim();
+
     out.push({
-      id: `p-csv-${Date.now()}-${i}`,
+      id: `p-csv-${baseTs}-${i}`,
       name,
-      sku: (cols[1] || '').trim(),
-      costPrice: Number(cols[2]) || 0,
-      sellPrice: Number(cols[3]) || 0,
+      sku,
+      costPrice,
+      sellPrice,
       priceEditable: false,
-      stock: Number(cols[4]) || 0,
-      unit: (cols[5] || 'pcs').trim(),
-      category: (cols[6] || 'Lainnya').trim(),
-      barcode: (cols[7] || '').trim(),
+      stock,
+      unit,
+      category,
+      barcode,
       composition: '',
       image: '',
-      catalogNote: (cols[8] || '').trim(),
-      createdAt: Date.now() + i,
+      catalogNote,
+      createdAt: baseTs + i,
     });
   }
   return out;
