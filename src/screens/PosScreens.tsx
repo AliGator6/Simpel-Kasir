@@ -25,6 +25,7 @@ import {
   Share2,
   Home,
   ShoppingCart,
+  Trash2,
 } from 'lucide-react';
 import {
   ActiveOrderDraft,
@@ -93,6 +94,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [showExtraOptionsModal, setShowExtraOptionsModal] = useState(false);
   const [itemDiscountTarget, setItemDiscountTarget] = useState<CartItem | null>(null);
   const [itemDiscountVal, setItemDiscountVal] = useState(0);
+  const [showClearCartConfirm, setShowClearCartConfirm] = useState(false);
 
   // Back button modal close hooks
   useBackClose(Boolean(qtyPopupProduct), () => setQtyPopupProduct(null));
@@ -103,6 +105,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   useBackClose(Boolean(editingCartItem), () => setEditingCartItem(null));
   useBackClose(showExtraOptionsModal, () => setShowExtraOptionsModal(false));
   useBackClose(Boolean(itemDiscountTarget), () => setItemDiscountTarget(null));
+  useBackClose(showClearCartConfirm, () => setShowClearCartConfirm(false));
 
   // Payment screen state
   const subtotal = useMemo(
@@ -255,6 +258,53 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
       notify('Barcode / Kode Produk tidak ditemukan');
     }
   };
+
+  const handleClearDraft = () => {
+    setDraft({
+      items: [],
+      customerId: null,
+      customerName: 'Umum',
+      discount: 0,
+      shipping: 0,
+      note: '',
+      progressStatus: 'antri',
+    });
+    setFilterInCartOnly(false);
+    setShowClearCartConfirm(false);
+    notify('Semua item terpilih dihapus');
+    if (screen === 'cart') {
+      onNavigate('pos');
+    }
+  };
+
+  const clearConfirmModal = showClearCartConfirm && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
+      <div className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl">
+        <h3 className="font-display text-base font-bold text-[#B54B54] dark:text-[#E07A82]">
+          Reset Item Terpilih?
+        </h3>
+        <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+          Semua item di keranjang ({totalItemsCount} item) beserta diskon/catatan transaksi ini akan dihapus.
+        </p>
+        <div className="mt-4 flex gap-2.5">
+          <button
+            type="button"
+            onClick={() => setShowClearCartConfirm(false)}
+            className="btn-lux-soft flex-1 rounded-xl py-2.5 text-sm font-semibold"
+          >
+            Batal
+          </button>
+          <button
+            type="button"
+            onClick={handleClearDraft}
+            className="btn-lux-garnet flex-1 rounded-xl py-2.5 text-sm font-bold"
+          >
+            Hapus Semua
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   // ==============================================================
   // 1. SCREEN: POS PICKER (Transaksi Baru - Pilih Produk)
@@ -465,13 +515,22 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           )}
         </div>
 
-        {/* Floating Luxury Emerald Checkout Bar */}
+        {/* Floating Luxury Emerald Checkout Bar + Reset Button */}
         {draft.items.length > 0 && (
-          <div className="fixed bottom-3 left-3 right-3 z-40 mx-auto max-w-4xl">
+          <div className="fixed bottom-3 left-3 right-3 z-40 mx-auto flex max-w-4xl items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowClearCartConfirm(true)}
+              className="btn-lux-garnet flex h-[54px] w-[54px] shrink-0 items-center justify-center rounded-2xl"
+              aria-label="Hapus semua item terpilih"
+              title="Reset item terpilih"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
             <button
               type="button"
               onClick={() => onNavigate('cart')}
-              className="btn-lux-primary flex w-full items-center justify-between rounded-2xl px-5 py-3.5"
+              className="btn-lux-primary flex flex-1 items-center justify-between rounded-2xl px-5 py-3.5"
             >
               <div className="flex items-center gap-3">
                 <ShoppingBasket className="h-5 w-5" />
@@ -600,6 +659,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             }}
           />
         )}
+        {clearConfirmModal}
       </div>
     );
   }
@@ -615,17 +675,30 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           mode="back"
           onLeftClick={() => onNavigate('pos')}
           rightContent={
-            <button
-              type="button"
-              onClick={() => {
-                setQuickCartTitle(draft.customerName !== 'Umum' ? draft.customerName : '');
-                setShowSaveQuickModal(true);
-              }}
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition"
-              aria-label="Simpan ke Transaksi Cepat"
-            >
-              <Save className="h-5 w-5" />
-            </button>
+            <>
+              {draft.items.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowClearCartConfirm(true)}
+                  className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#B54B54]/25 text-[#F6B8BD] hover:bg-[#B54B54]/40 active:scale-95 transition"
+                  aria-label="Hapus semua item terpilih"
+                  title="Reset item terpilih"
+                >
+                  <Trash2 className="h-5 w-5" />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickCartTitle(draft.customerName !== 'Umum' ? draft.customerName : '');
+                  setShowSaveQuickModal(true);
+                }}
+                className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition"
+                aria-label="Simpan ke Transaksi Cepat"
+              >
+                <Save className="h-5 w-5" />
+              </button>
+            </>
           }
         />
 
@@ -1031,6 +1104,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             </div>
           </div>
         )}
+        {clearConfirmModal}
       </div>
     );
   }
@@ -1079,8 +1153,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             data.printerSettings,
             data.currencySymbol
           );
-        } catch {
-          // silently open receipt screen if printer not connected
+        } catch (err) {
+          notify((err as Error).message || 'Printer belum tersambung');
         }
       }
     };
