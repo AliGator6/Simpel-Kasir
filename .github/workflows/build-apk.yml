@@ -62,11 +62,25 @@ jobs:
           '
           npx cap sync android
 
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-simpelkasir-${{ runner.os }}-v1
+
       - name: Build Debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt/3..."
+            ./gradlew assembleDebug --max-workers=2 --no-daemon && exit 0
+            echo "Attempt $attempt failed (kemungkinan rate limit 429), menunggu 20 detik..."
+            sleep 20
+          done
+          exit 1
 
       - name: Build Signed Release APK (if Keystore Secret exists)
         env:
@@ -78,11 +92,15 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > android/app/release-key.jks
             cd android
-            ./gradlew assembleRelease \
-              -Pandroid.injected.signing.store.file=release-key.jks \
-              -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
-              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
-              -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+            for attempt in 1 2 3; do
+              ./gradlew assembleRelease --max-workers=2 --no-daemon \
+                -Pandroid.injected.signing.store.file=release-key.jks \
+                -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+                -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+                -Pandroid.injected.signing.key.password="$KEY_PASSWORD" && exit 0
+              sleep 20
+            done
+            exit 1
           else
             echo "No KEYSTORE_BASE64 secret configured; skipping release signing."
           fi
