@@ -259,11 +259,21 @@ export function saveAppData(data: AppData): void {
         }
       };
       req.onsuccess = () => {
+        const db = req.result;
         try {
-          const tx = req.result.transaction(IDB_STORE, 'readwrite');
+          const tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.oncomplete = () => {
+            try { db.close(); } catch { /* ignore */ }
+          };
+          tx.onerror = () => {
+            try { db.close(); } catch { /* ignore */ }
+          };
+          tx.onabort = () => {
+            try { db.close(); } catch { /* ignore */ }
+          };
           tx.objectStore(IDB_STORE).put(data, 'latest');
         } catch {
-          // ignore silent mirror failures
+          try { db.close(); } catch { /* ignore */ }
         }
       };
     }

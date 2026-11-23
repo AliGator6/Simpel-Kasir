@@ -33,6 +33,7 @@ export interface WifiDownloadResult {
   fileName: string;
   savedPath: string;
   storeName: string;
+  saveWarning?: string;
 }
 
 interface NativePrinterPlugin {

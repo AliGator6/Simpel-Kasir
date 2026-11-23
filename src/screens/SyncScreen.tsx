@@ -10,6 +10,8 @@ import {
   CheckCircle2,
   FileSpreadsheet,
   Smartphone,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { AppData } from '../types';
 import { TopBar } from '../components/TopBar';
@@ -44,6 +46,7 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
   const [peers, setPeers] = useState<WifiDiscoveredPeer[]>([]);
   const [manualAddress, setManualAddress] = useState('');
   const [receivingAddr, setReceivingAddr] = useState<string | null>(null);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [lastReceivedSummary, setLastReceivedSummary] = useState<{
     count: number;
     savedPath: string;
@@ -94,8 +97,11 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
   };
 
   const handleStartSendAppProducts = async () => {
+    setErrorBanner(null);
     if (data.products.length === 0) {
-      notify('Daftar produk kosong. Pilih file CSV lain atau tambahkan produk dulu.');
+      const msg = 'Daftar produk kosong. Pilih file CSV lain atau tambahkan produk dulu.';
+      setErrorBanner(msg);
+      notify(msg);
       return;
     }
     setStartingSend(true);
@@ -112,7 +118,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
       setServerInfo(info);
       notify('Mode kirim WiFi aktif! Silakan terima dari HP lain.');
     } catch (err) {
-      notify((err as Error).message || 'Gagal mengaktifkan pengiriman WiFi');
+      const msg = (err as Error).message || 'Gagal mengaktifkan pengiriman WiFi';
+      setErrorBanner(msg);
+      notify(msg);
     } finally {
       setStartingSend(false);
     }
@@ -121,16 +129,19 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
   const handleStartSendPickedFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setErrorBanner(null);
     const reader = new FileReader();
     reader.onload = async () => {
-      const text = String(reader.result || '');
-      const parsed = parseProductsFromCsv(text);
-      if (parsed.length === 0) {
-        notify('File CSV kosong atau format produk tidak sesuai');
-        return;
-      }
-      setStartingSend(true);
       try {
+        const text = String(reader.result || '');
+        const parsed = parseProductsFromCsv(text);
+        if (parsed.length === 0) {
+          const msg = 'File CSV kosong atau format produk tidak sesuai';
+          setErrorBanner(msg);
+          notify(msg);
+          return;
+        }
+        setStartingSend(true);
         const info = await startWifiCsvServer({
           content: text,
           fileName: file.name || 'Products.csv',
@@ -140,7 +151,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
         setServerInfo(info);
         notify(`Siap mengirim ${file.name} (${formatNumber(parsed.length)} produk)`);
       } catch (err) {
-        notify((err as Error).message || 'Gagal mengaktifkan pengiriman WiFi');
+        const msg = (err as Error).message || 'Gagal mengaktifkan pengiriman WiFi';
+        setErrorBanner(msg);
+        notify(msg);
       } finally {
         setStartingSend(false);
       }
@@ -150,32 +163,42 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
   };
 
   const handleStopSending = async () => {
+    setErrorBanner(null);
     await stopWifiCsvServer();
     setServerInfo(null);
     notify('Pengiriman WiFi dihentikan');
   };
 
   const handleDiscoverPeers = async () => {
+    setErrorBanner(null);
     setScanning(true);
     try {
       const list = await discoverWifiCsvServers();
       setPeers(list);
       if (list.length === 0) {
-        notify('Belum ada HP pengirim ditemukan. Pastikan tombol Kirim di HP pengirim sudah aktif.');
+        const msg =
+          'Pengirim belum ditemukan. Pastikan: (1) HP Pengirim tetap di layar "Siap Dikirim via WiFi", (2) Ke-2 HP berada di WiFi atau Hotspot yang sama, atau ketik IP pengirim secara manual.';
+        setErrorBanner(msg);
+        notify('Belum ada HP pengirim ditemukan');
       } else {
         notify(`Ditemukan ${list.length} perangkat pengirim`);
       }
     } catch (err) {
-      notify((err as Error).message || 'Gagal mencari perangkat di WiFi / Hotspot');
+      const msg = (err as Error).message || 'Gagal mencari perangkat di WiFi / Hotspot';
+      setErrorBanner(msg);
+      notify(msg);
     } finally {
       setScanning(false);
     }
   };
 
   const handleReceiveFromAddress = async (addr: string) => {
-    const cleanAddr = addr.trim();
+    setErrorBanner(null);
+    const cleanAddr = addr.trim().replace(/\s+/g, '');
     if (!cleanAddr) {
-      notify('Masukkan alamat IP pengirim terlebih dahulu');
+      const msg = 'Masukkan alamat IP pengirim terlebih dahulu';
+      setErrorBanner(msg);
+      notify(msg);
       return;
     }
     setReceivingAddr(cleanAddr);
@@ -186,14 +209,20 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
         res.savedPath || `Download/SimpelKasir/${res.fileName}`,
         res.storeName || 'Perangkat Pengirim'
       );
+      if (res.saveWarning) {
+        setErrorBanner(`Produk berhasil disinkron! Catatan penyimpanan file: ${res.saveWarning}`);
+      }
     } catch (err) {
-      notify((err as Error).message || 'Gagal menerima file CSV dari pengirim');
+      const msg = (err as Error).message || 'Gagal menerima file CSV dari pengirim';
+      setErrorBanner(msg);
+      notify(msg);
     } finally {
       setReceivingAddr(null);
     }
   };
 
   const handleSaveSnapshotToSimpelKasirFolder = async () => {
+    setErrorBanner(null);
     try {
       const csv = exportProductsToCsv(data.products);
       const stamp = new Date().toISOString().slice(0, 10);
@@ -205,7 +234,9 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
       );
       notify(`Tersimpan di ${res.savedPath}`);
     } catch (err) {
-      notify((err as Error).message || 'Gagal menyimpan file CSV');
+      const msg = (err as Error).message || 'Gagal menyimpan file CSV';
+      setErrorBanner(msg);
+      notify(msg);
     }
   };
 
@@ -233,7 +264,10 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
         <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#E6EAE5] dark:bg-[#1A242B] p-1.5">
           <button
             type="button"
-            onClick={() => setTab('send')}
+            onClick={() => {
+              setErrorBanner(null);
+              setTab('send');
+            }}
             className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition ${
               tab === 'send' ? 'btn-lux-primary' : 'text-slate-600 dark:text-slate-300'
             }`}
@@ -243,7 +277,10 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setTab('receive')}
+            onClick={() => {
+              setErrorBanner(null);
+              setTab('receive');
+            }}
             className={`flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition ${
               tab === 'receive' ? 'btn-lux-primary' : 'text-slate-600 dark:text-slate-300'
             }`}
@@ -252,6 +289,21 @@ export const SyncScreen: React.FC<SyncScreenProps> = ({
             <span>Terima CSV</span>
           </button>
         </div>
+
+        {errorBanner && (
+          <div className="rounded-2xl border border-[#B54B54]/40 bg-[#B54B54]/10 p-3.5 flex items-start gap-2.5 text-xs text-[#8D2E37] dark:text-[#F4A5AC]">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <p className="flex-1 leading-relaxed break-words">{errorBanner}</p>
+            <button
+              type="button"
+              onClick={() => setErrorBanner(null)}
+              className="shrink-0 p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
+              aria-label="Tutup pesan"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {/* TAB 1: KIRIM */}
         {tab === 'send' && (

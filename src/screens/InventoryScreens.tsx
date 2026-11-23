@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search,
   ArrowDownAZ,
@@ -59,6 +59,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
   notify,
 }) => {
   const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
   const [showSearch, setShowSearch] = useState(false);
   const [sortAsc, setSortAsc] = useState(true);
   const [visibleLimit, setVisibleLimit] = useState(100);
@@ -126,17 +127,34 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
   const [masterInput, setMasterInput] = useState('');
   const [supPhone, setSupPhone] = useState('');
 
-  const filteredProducts = useMemo(() => {
-    const q = search.trim().toLowerCase();
+  const sortedIndexedProducts = useMemo(() => {
     const collator = new Intl.Collator('id', { sensitivity: 'base' });
     return [...data.products]
-      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.barcode.toLowerCase().includes(q))
-      .sort((a, b) => (sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)));
-  }, [data.products, search, sortAsc]);
+      .sort((a, b) => (sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)))
+      .map((product) => ({
+        product,
+        nameLower: product.name.toLowerCase(),
+        skuLower: product.sku.toLowerCase(),
+        barcodeLower: product.barcode.toLowerCase(),
+      }));
+  }, [data.products, sortAsc]);
+
+  const filteredProducts = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    if (!q) return sortedIndexedProducts.map((item) => item.product);
+    const out: Product[] = [];
+    for (let i = 0; i < sortedIndexedProducts.length; i++) {
+      const item = sortedIndexedProducts[i];
+      if (item.nameLower.includes(q) || item.skuLower.includes(q) || item.barcodeLower.includes(q)) {
+        out.push(item.product);
+      }
+    }
+    return out;
+  }, [sortedIndexedProducts, deferredSearch]);
 
   useEffect(() => {
     setVisibleLimit(100);
-  }, [search, sortAsc, screen, data.products]);
+  }, [deferredSearch, sortAsc, screen, data.products]);
 
   // =========================================================
   // 1. PRODUK LIST
@@ -190,7 +208,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
     };
 
     return (
-      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
+      <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
         <TopBar
           title="Produk"
           mode="menu"
@@ -292,10 +310,10 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                 }}
                 className="flex w-full items-center justify-between px-4 py-3.5 text-left hover:bg-[#F7F9F7] dark:hover:bg-[#1B262E] transition"
               >
-                <div className="min-w-0 pr-3">
-                  <p className="font-display text-[16px] font-semibold text-[#17252B] dark:text-white truncate">{p.name}</p>
+                <div className="min-w-0 flex-1 pr-3">
+                  <p className="font-display text-[16px] font-semibold whitespace-normal break-words [overflow-wrap:anywhere] text-[#17252B] dark:text-white">{p.name}</p>
                   {(data.productSettings.useSku || data.productSettings.useStock) && (
-                    <p className="mt-0.5 text-xs text-slate-400">
+                    <p className="mt-0.5 text-xs whitespace-normal break-words [overflow-wrap:anywhere] text-slate-400">
                       {data.productSettings.useSku && p.sku ? p.sku : ''}
                       {data.productSettings.useSku && p.sku && data.productSettings.useStock ? ' · ' : ''}
                       {data.productSettings.useStock ? `Stok: ${p.stock} ${p.unit || ''}` : ''}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActiveOrderDraft, AppData, Product, SavedQuickCart, ScreenId, Transaction } from './types';
 import {
   EMPTY_DRAFT,
@@ -19,6 +19,58 @@ import { SyncScreen } from './screens/SyncScreen';
 declare global {
   interface Window {
     __handleAndroidBack?: () => 'handled' | 'exit';
+  }
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  errorMessage: string;
+}
+
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  ErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: '' };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'Terjadi kesalahan tampilan yang tidak terduga.',
+    };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex min-h-screen flex-col items-center justify-center bg-[#F5F6F4] dark:bg-[#0E1418] p-6 text-center text-[#17252B] dark:text-[#ECF1EF]">
+          <div className="surface-card w-full max-w-sm rounded-3xl p-6 shadow-xl space-y-3">
+            <h2 className="font-display text-lg font-bold text-[#B54B54] dark:text-[#E07A82]">
+              Tampilan Sedang Dipulihkan
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Data produk dan transaksi Anda tetap aman tersimpan. Ketuk tombol di bawah untuk melanjutkan.
+            </p>
+            {this.state.errorMessage && (
+              <p className="rounded-xl bg-slate-100 dark:bg-[#1B262E] p-2.5 text-[11px] font-mono text-slate-500 break-words">
+                {this.state.errorMessage}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => this.setState({ hasError: false, errorMessage: '' })}
+              className="btn-lux-primary w-full rounded-xl py-3 text-sm font-bold"
+            >
+              Pulihkan Aplikasi
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
   }
 }
 
@@ -262,7 +314,8 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
+    <AppErrorBoundary>
+      <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -408,6 +461,7 @@ export default function App() {
           {toastMsg}
         </div>
       )}
-    </div>
+      </div>
+    </AppErrorBoundary>
   );
 }

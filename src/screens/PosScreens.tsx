@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownAZ,
   Settings,
@@ -78,6 +78,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
 }) => {
   // POS Picker states
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [showSearchBox, setShowSearchBox] = useState(true);
   const [filterInCartOnly, setFilterInCartOnly] = useState(false);
   const [sortAsc, setSortAsc] = useState(true);
@@ -260,32 +261,47 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
 
   const sortedProducts = useMemo(() => {
     const collator = new Intl.Collator('id', { sensitivity: 'base' });
-    return [...data.products].sort((a, b) =>
-      sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)
-    );
+    return [...data.products]
+      .sort((a, b) =>
+        sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)
+      )
+      .map((product) => ({
+        product,
+        nameLower: product.name.toLowerCase(),
+        skuLower: product.sku.toLowerCase(),
+        barcodeLower: product.barcode.toLowerCase(),
+      }));
   }, [data.products, sortAsc]);
 
   const filteredProducts = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    return sortedProducts.filter((p) => {
-      if (filterInCartOnly && (cartQtyMap.get(p.id) || 0) <= 0) return false;
-      if (!q) return true;
-      if (data.productSettings.strictSearch) {
-        return (
-          p.name.toLowerCase().startsWith(q) ||
-          p.sku.toLowerCase() === q ||
-          p.barcode.toLowerCase() === q
-        );
+    const q = deferredSearchQuery.trim().toLowerCase();
+    const out: Product[] = [];
+    for (let i = 0; i < sortedProducts.length; i++) {
+      const entry = sortedProducts[i];
+      if (filterInCartOnly && (cartQtyMap.get(entry.product.id) || 0) <= 0) continue;
+      if (q) {
+        if (data.productSettings.strictSearch) {
+          if (
+            !entry.nameLower.startsWith(q) &&
+            entry.skuLower !== q &&
+            entry.barcodeLower !== q
+          ) {
+            continue;
+          }
+        } else if (
+          !entry.nameLower.includes(q) &&
+          !entry.skuLower.includes(q) &&
+          !entry.barcodeLower.includes(q)
+        ) {
+          continue;
+        }
       }
-      return (
-        p.name.toLowerCase().includes(q) ||
-        p.sku.toLowerCase().includes(q) ||
-        p.barcode.toLowerCase().includes(q)
-      );
-    });
+      out.push(entry.product);
+    }
+    return out;
   }, [
     sortedProducts,
-    searchQuery,
+    deferredSearchQuery,
     filterInCartOnly,
     filterInCartOnly ? cartQtyMap : null,
     data.productSettings.strictSearch,
@@ -293,7 +309,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
 
   useEffect(() => {
     setVisibleLimit(100);
-  }, [searchQuery, filterInCartOnly, sortAsc, data.products]);
+  }, [deferredSearchQuery, filterInCartOnly, sortAsc, data.products]);
 
   const visibleProducts = useMemo(
     () => filteredProducts.slice(0, visibleLimit),
@@ -412,7 +428,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           };
 
     return (
-      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
+      <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
         <TopBar
           title="Transaksi Baru"
           mode="menu"
@@ -558,7 +574,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               };
 
               return (
-                <div key={product.id} className={`flex ${densityStyle.rowMinH} items-center`}>
+                <div key={product.id} className={`flex ${densityStyle.rowMinH} w-full min-w-0 items-center overflow-hidden`}>
                   {/* Left area: Short tap = qty popup, Long press = Edit Product */}
                   <div
                     role="button"
@@ -577,13 +593,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                       setQtyInputVal(qty > 0 ? qty : 1);
                       setPriceInputVal(product.sellPrice);
                     }}
-                    className={`flex flex-1 flex-col justify-center ${densityStyle.leftPad} text-left select-none cursor-pointer active:bg-[#F5F7F5] dark:active:bg-[#1B262E] transition`}
+                    className={`flex min-w-0 flex-1 flex-col justify-center ${densityStyle.leftPad} text-left select-none cursor-pointer active:bg-[#F5F7F5] dark:active:bg-[#1B262E] transition`}
                   >
-                    <p className={`font-display ${densityStyle.titleCls} font-semibold text-[#17252B] dark:text-[#ECF1EF]`}>
+                    <p className={`font-display ${densityStyle.titleCls} font-semibold whitespace-normal break-words [overflow-wrap:anywhere] text-[#17252B] dark:text-[#ECF1EF]`}>
                       {product.name}
                     </p>
                     {data.productSettings.useSku && product.sku && (
-                      <p className={`${densityStyle.skuCls} font-medium text-slate-500 dark:text-slate-400 truncate`}>
+                      <p className={`${densityStyle.skuCls} font-medium whitespace-normal break-words [overflow-wrap:anywhere] text-slate-500 dark:text-slate-400`}>
                         {product.sku}
                       </p>
                     )}
@@ -680,11 +696,11 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         {qtyPopupProduct && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
             <div className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl">
-              <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white truncate">
+              <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white break-words [overflow-wrap:anywhere]">
                 {qtyPopupProduct.name}
               </h3>
               {data.productSettings.useSku && qtyPopupProduct.sku && (
-                <p className="mt-0.5 text-xs font-semibold text-[#165B49] dark:text-[#4BB89A] truncate">
+                <p className="mt-0.5 text-xs font-semibold text-[#165B49] dark:text-[#4BB89A] break-words [overflow-wrap:anywhere]">
                   {qtyPopupProduct.sku}
                 </p>
               )}

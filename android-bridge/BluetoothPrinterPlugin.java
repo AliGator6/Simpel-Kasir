@@ -12,8 +12,16 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -60,14 +68,17 @@ import java.util.Date;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 @CapacitorPlugin(
@@ -102,17 +113,24 @@ public class BluetoothPrinterPlugin extends Plugin {
     private BroadcastReceiver activeDiscoveryReceiver = null;
     private BroadcastReceiver btStateReceiver = null;
 
+    private static final String PREFS_BT = "simpelkasir_bt_prefs";
+    private static final int MODE_SECURE_SPP = 1;
+    private static final int MODE_INSECURE_SPP = 2;
+    private static final int MODE_REFLECTION_CH1 = 3;
+
     // Persistent keep-alive socket for instant printing & low battery overhead
     private final Object socketLock = new Object();
     private BluetoothSocket activeSocket = null;
     private String activeAddress = null;
     private volatile String preferredPrinterAddress = null;
+    private final ConcurrentHashMap<String, Integer> preferredConnectModeMap = new ConcurrentHashMap<>();
 
     // WiFi / Hotspot LAN CSV Sync Server state
     private final Object wifiServerLock = new Object();
     private volatile boolean wifiServerRunning = false;
     private ServerSocket wifiHttpServer = null;
     private DatagramSocket wifiUdpSocket = null;
+    private WifiManager.MulticastLock wifiServerMulticastLock = null;
     private int wifiHttpPort = WIFI_HTTP_PORT_START;
     private byte[] wifiHostedCsvBytes = new byte[0];
     private String wifiHostedFileName = "Products_SimpelKasir.csv";
@@ -624,6 +642,42 @@ public class BluetoothPrinterPlugin extends Plugin {
     // WIFI / HOTSPOT LOCAL CSV SYNC (CARA 1 - 1 WIFI / HOTSPOT TANPA INTERNET)
     // =========================================================================
 
+    private WifiManager.MulticastLock acquireMulticastLock(String tag) {
+        try {
+            WifiManager wm = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                WifiManager.MulticastLock lock = wm.createMulticastLock(tag);
+                lock.setReferenceCounted(false);
+                lock.acquire();
+                return lock;
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static void releaseMulticastLock(WifiManager.MulticastLock lock) {
+        if (lock != null) {
+            try {
+                if (lock.isHeld()) {
+                    lock.release();
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static boolean isPrivateIpv4Candidate(InetAddress addr) {
+        if (!(addr instanceof Inet4Address)) return false;
+        if (addr.isLoopbackAddress() || addr.isLinkLocalAddress() || addr.isMulticastAddress() || addr.isAnyLocalAddress()) {
+            return false;
+        }
+        String host = addr.getHostAddress();
+        if (host == null || host.isEmpty()) return false;
+        return addr.isSiteLocalAddress()
+            || host.startsWith("192.168.")
+            || host.startsWith("10.")
+            || host.startsWith("172.");
+    }
+
     private List<String> getLocalWifiIps() {
         List<String> preferred = new ArrayList<>();
         List<String> others = new ArrayList<>();
@@ -633,16 +687,16 @@ public class BluetoothPrinterPlugin extends Plugin {
                 NetworkInterface iface = ifaces.nextElement();
                 if (!iface.isUp() || iface.isLoopback()) continue;
                 String name = iface.getName() == null ? "" : iface.getName().toLowerCase(Locale.ROOT);
-                if (name.contains("rmnet") || name.contains("ccmni") || name.contains("tun") || name.contains("dummy")) {
+                if (name.contains("rmnet") || name.contains("ccmni") || name.contains("tun") || name.contains("dummy") || name.startsWith("v4-")) {
                     continue;
                 }
                 Enumeration<InetAddress> addrs = iface.getInetAddresses();
                 while (addrs.hasMoreElements()) {
                     InetAddress addr = addrs.nextElement();
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress() && addr.isSiteLocalAddress()) {
+                    if (isPrivateIpv4Candidate(addr)) {
                         String hostAddr = addr.getHostAddress();
                         if (hostAddr != null && !hostAddr.isEmpty()) {
-                            if (name.contains("wlan") || name.contains("ap") || name.contains("swlan") || name.contains("wifi")) {
+                            if (name.contains("wlan") || name.contains("ap") || name.contains("swlan") || name.contains("softap") || name.contains("wifi") || name.contains("p2p")) {
                                 if (!preferred.contains(hostAddr)) preferred.add(hostAddr);
                             } else {
                                 if (!others.contains(hostAddr)) others.add(hostAddr);
@@ -652,6 +706,63 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
             }
         } catch (Exception ignored) {}
+
+        // Fallback via ConnectivityManager LinkProperties (useful on newer Android hotspot/tethering)
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getContext().getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                Network[] networks = cm.getAllNetworks();
+                for (Network net : networks) {
+                    NetworkCapabilities caps = cm.getNetworkCapabilities(net);
+                    if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                        && !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                        continue;
+                    }
+                    LinkProperties lp = cm.getLinkProperties(net);
+                    if (lp == null) continue;
+                    String ifaceName = lp.getInterfaceName() == null ? "" : lp.getInterfaceName().toLowerCase(Locale.ROOT);
+                    if (ifaceName.contains("rmnet") || ifaceName.contains("ccmni")) continue;
+                    for (LinkAddress la : lp.getLinkAddresses()) {
+                        InetAddress addr = la.getAddress();
+                        if (isPrivateIpv4Candidate(addr)) {
+                            String hostAddr = addr.getHostAddress();
+                            if (hostAddr != null && !preferred.contains(hostAddr) && !others.contains(hostAddr)) {
+                                if (ifaceName.contains("wlan") || ifaceName.contains("ap") || ifaceName.contains("swlan") || ifaceName.contains("wifi")) {
+                                    preferred.add(hostAddr);
+                                } else {
+                                    others.add(hostAddr);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback via WifiManager IPv4 int
+        try {
+            WifiManager wm = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                WifiInfo wifiInfo = wm.getConnectionInfo();
+                if (wifiInfo != null) {
+                    int ipInt = wifiInfo.getIpAddress();
+                    if (ipInt != 0) {
+                        String wifiIp = String.format(
+                            Locale.US,
+                            "%d.%d.%d.%d",
+                            (ipInt & 0xff),
+                            (ipInt >> 8 & 0xff),
+                            (ipInt >> 16 & 0xff),
+                            (ipInt >> 24 & 0xff)
+                        );
+                        if (!"0.0.0.0".equals(wifiIp) && !preferred.contains(wifiIp) && !others.contains(wifiIp)) {
+                            preferred.add(wifiIp);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
         preferred.addAll(others);
         return preferred;
     }
@@ -686,15 +797,24 @@ public class BluetoothPrinterPlugin extends Plugin {
                 } catch (Exception ignored) {}
                 wifiUdpSocket = null;
             }
+            releaseMulticastLock(wifiServerMulticastLock);
+            wifiServerMulticastLock = null;
         }
     }
 
     private void handleWifiHttpClient(Socket client) {
         try {
-            client.setSoTimeout(8000);
+            client.setSoTimeout(10000);
             BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream(), StandardCharsets.UTF_8));
             String requestLine = reader.readLine();
             if (requestLine == null) return;
+            // Drain incoming HTTP request headers cleanly so client never receives TCP RST
+            String headerLine;
+            int guard = 0;
+            while (guard < 64 && (headerLine = reader.readLine()) != null && !headerLine.isEmpty()) {
+                guard++;
+            }
+
             String path = "/";
             String[] parts = requestLine.split(" ");
             if (parts.length >= 2) {
@@ -714,9 +834,13 @@ public class BluetoothPrinterPlugin extends Plugin {
                     "Access-Control-Allow-Origin: *\r\n" +
                     "Connection: close\r\n\r\n";
                 os.write(headers.getBytes(StandardCharsets.US_ASCII));
-                os.write(body);
+                int chunk = 16384;
+                for (int offset = 0; offset < body.length; offset += chunk) {
+                    int len = Math.min(chunk, body.length - offset);
+                    os.write(body, offset, len);
+                }
                 os.flush();
-            } else if ("/info".equals(path)) {
+            } else if ("/info".equals(path) || "/ping".equals(path)) {
                 JSONObject info = new JSONObject();
                 info.put("ok", true);
                 info.put("app", "SimpelKasir");
@@ -811,6 +935,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                 wifiHttpServer = openedHttp;
                 wifiHttpPort = chosenPort;
                 wifiServerRunning = true;
+                wifiServerMulticastLock = acquireMulticastLock("SimpelKasirWifiServer");
             }
 
             final ServerSocket serverRef = openedHttp;
@@ -827,7 +952,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
             });
 
-            // Optional UDP responder for 1-tap auto-discovery on the same WiFi/Hotspot
+            // UDP responder for instant auto-discovery on the same WiFi/Hotspot
             try {
                 DatagramSocket udp = new DatagramSocket(null);
                 udp.setReuseAddress(true);
@@ -871,7 +996,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                     }
                 });
             } catch (Exception ignored) {
-                // UDP discovery socket optional; manual IP:port HTTP transfer always works
+                // UDP discovery socket optional; HTTP subnet scan & manual IP:port always work
             }
 
             JSArray ipArr = new JSArray();
@@ -897,88 +1022,171 @@ public class BluetoothPrinterPlugin extends Plugin {
         call.resolve(ok);
     }
 
+    private JSObject probeHttpPeerInfo(String ip, int port) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL("http://" + ip + ":" + port + "/info").openConnection();
+            conn.setConnectTimeout(240);
+            conn.setReadTimeout(450);
+            conn.setRequestProperty("Connection", "close");
+            if (conn.getResponseCode() == 200) {
+                try (InputStream is = conn.getInputStream();
+                     ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[2048];
+                    int n;
+                    while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                    JSONObject json = new JSONObject(bos.toString(StandardCharsets.UTF_8.name()));
+                    if ("SimpelKasir".equals(json.optString("app"))) {
+                        JSObject peer = new JSObject();
+                        peer.put("ip", ip);
+                        peer.put("port", json.optInt("port", port));
+                        peer.put("storeName", json.optString("storeName", "SimpelKasir"));
+                        peer.put("deviceName", json.optString("deviceName", "Android"));
+                        peer.put("productCount", json.optInt("productCount", 0));
+                        peer.put("fileName", json.optString("fileName", "Products_SimpelKasir.csv"));
+                        return peer;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return null;
+    }
+
     @PluginMethod
     public void discoverWifiCsvServers(PluginCall call) {
         wifiExecutor.execute(() -> {
-            Map<String, JSObject> found = new LinkedHashMap<>();
-            DatagramSocket sock = null;
+            Map<String, JSObject> found = new ConcurrentHashMap<>();
+            WifiManager.MulticastLock discoverLock = acquireMulticastLock("SimpelKasirWifiDiscover");
+            List<String> selfIps = getLocalWifiIps();
+            Set<String> selfSet = new HashSet<>(selfIps);
+
+            // Launch parallel HTTP subnet scan fallback (works even if Hotspot/WiFi blocks UDP broadcasts!)
+            ExecutorService httpScanPool = Executors.newFixedThreadPool(40);
+            List<Future<?>> httpFutures = new ArrayList<>();
             try {
-                sock = new DatagramSocket();
-                sock.setBroadcast(true);
-                sock.setSoTimeout(350);
+                List<String> subnetPrefixes = new ArrayList<>();
+                for (String myIp : selfIps) {
+                    int dot = myIp.lastIndexOf('.');
+                    if (dot > 0) {
+                        String pfx = myIp.substring(0, dot + 1);
+                        if (!subnetPrefixes.contains(pfx) && subnetPrefixes.size() < 2) {
+                            subnetPrefixes.add(pfx);
+                        }
+                    }
+                }
+                Set<String> httpProbeHosts = new LinkedHashSet<>();
+                httpProbeHosts.add("192.168.43.1");
+                httpProbeHosts.add("192.168.137.1");
+                httpProbeHosts.add("192.168.49.1");
+                for (String pfx : subnetPrefixes) {
+                    httpProbeHosts.add(pfx + "1");
+                    for (int host = 2; host <= 254; host++) {
+                        httpProbeHosts.add(pfx + host);
+                    }
+                }
+                for (String hostIp : httpProbeHosts) {
+                    if (selfSet.contains(hostIp)) continue;
+                    httpFutures.add(httpScanPool.submit(() -> {
+                        JSObject peer = probeHttpPeerInfo(hostIp, WIFI_HTTP_PORT_START);
+                        if (peer != null) {
+                            found.put(hostIp + ":" + WIFI_HTTP_PORT_START, peer);
+                        }
+                    }));
+                }
 
-                Set<String> targets = new HashSet<>();
-                targets.add("255.255.255.255");
-                targets.add("192.168.43.1");
-                targets.add("192.168.137.1");
-                targets.add("192.168.49.1");
-
+                // Simultaneously run UDP broadcast discovery
+                DatagramSocket sock = null;
                 try {
-                    Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
-                    while (ifaces != null && ifaces.hasMoreElements()) {
-                        NetworkInterface iface = ifaces.nextElement();
-                        if (!iface.isUp() || iface.isLoopback()) continue;
-                        for (InterfaceAddress ia : iface.getInterfaceAddresses()) {
-                            InetAddress bcast = ia.getBroadcast();
-                            if (bcast != null && bcast.getHostAddress() != null) {
-                                targets.add(bcast.getHostAddress());
-                            }
-                            InetAddress local = ia.getAddress();
-                            if (local instanceof Inet4Address && local.getHostAddress() != null) {
-                                String ip = local.getHostAddress();
-                                int dot = ip.lastIndexOf('.');
-                                if (dot > 0) {
-                                    targets.add(ip.substring(0, dot + 1) + "1");
+                    sock = new DatagramSocket();
+                    sock.setBroadcast(true);
+                    sock.setSoTimeout(300);
+
+                    Set<String> targets = new HashSet<>();
+                    targets.add("255.255.255.255");
+                    targets.add("192.168.43.1");
+                    targets.add("192.168.43.255");
+                    targets.add("192.168.137.1");
+                    targets.add("192.168.137.255");
+                    targets.add("192.168.49.1");
+                    for (String pfx : subnetPrefixes) {
+                        targets.add(pfx + "1");
+                        targets.add(pfx + "255");
+                    }
+
+                    try {
+                        Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+                        while (ifaces != null && ifaces.hasMoreElements()) {
+                            NetworkInterface iface = ifaces.nextElement();
+                            if (!iface.isUp() || iface.isLoopback()) continue;
+                            for (InterfaceAddress ia : iface.getInterfaceAddresses()) {
+                                InetAddress bcast = ia.getBroadcast();
+                                if (bcast != null && bcast.getHostAddress() != null) {
+                                    targets.add(bcast.getHostAddress());
                                 }
                             }
                         }
-                    }
-                } catch (Exception ignored) {}
+                    } catch (Exception ignored) {}
 
-                byte[] probe = WIFI_DISCOVER_MAGIC.getBytes(StandardCharsets.UTF_8);
-                long start = System.currentTimeMillis();
-                for (int round = 0; round < 2; round++) {
-                    for (String target : targets) {
-                        try {
-                            InetAddress dest = InetAddress.getByName(target);
-                            sock.send(new DatagramPacket(probe, probe.length, dest, WIFI_UDP_DISCOVER_PORT));
-                        } catch (Exception ignored) {}
+                    byte[] probe = WIFI_DISCOVER_MAGIC.getBytes(StandardCharsets.UTF_8);
+                    long start = System.currentTimeMillis();
+                    for (int round = 0; round < 2; round++) {
+                        for (String target : targets) {
+                            try {
+                                InetAddress dest = InetAddress.getByName(target);
+                                sock.send(new DatagramPacket(probe, probe.length, dest, WIFI_UDP_DISCOVER_PORT));
+                            } catch (Exception ignored) {}
+                        }
+                        long roundEnd = start + (round == 0 ? 550 : 1200);
+                        byte[] recvBuf = new byte[2048];
+                        while (System.currentTimeMillis() < roundEnd) {
+                            try {
+                                DatagramPacket pkt = new DatagramPacket(recvBuf, recvBuf.length);
+                                sock.receive(pkt);
+                                String raw = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8).trim();
+                                JSONObject json = new JSONObject(raw);
+                                if ("SimpelKasir".equals(json.optString("app"))) {
+                                    String ip = json.optString("ip", pkt.getAddress().getHostAddress());
+                                    if (selfSet.contains(ip)) continue;
+                                    int port = json.optInt("port", WIFI_HTTP_PORT_START);
+                                    String key = ip + ":" + port;
+                                    JSObject peer = new JSObject();
+                                    peer.put("ip", ip);
+                                    peer.put("port", port);
+                                    peer.put("storeName", json.optString("storeName", "SimpelKasir"));
+                                    peer.put("deviceName", json.optString("deviceName", "Android"));
+                                    peer.put("productCount", json.optInt("productCount", 0));
+                                    peer.put("fileName", json.optString("fileName", "Products_SimpelKasir.csv"));
+                                    found.put(key, peer);
+                                }
+                            } catch (SocketTimeoutException ignored) {
+                                break;
+                            } catch (Exception ignored) {}
+                        }
                     }
-                    long roundEnd = start + (round == 0 ? 750 : 1750);
-                    byte[] recvBuf = new byte[2048];
-                    while (System.currentTimeMillis() < roundEnd) {
+                } catch (Exception ignored) {
+                } finally {
+                    if (sock != null) {
                         try {
-                            DatagramPacket pkt = new DatagramPacket(recvBuf, recvBuf.length);
-                            sock.receive(pkt);
-                            String raw = new String(pkt.getData(), 0, pkt.getLength(), StandardCharsets.UTF_8).trim();
-                            JSONObject json = new JSONObject(raw);
-                            if ("SimpelKasir".equals(json.optString("app"))) {
-                                String ip = json.optString("ip", pkt.getAddress().getHostAddress());
-                                int port = json.optInt("port", WIFI_HTTP_PORT_START);
-                                String key = ip + ":" + port;
-                                JSObject peer = new JSObject();
-                                peer.put("ip", ip);
-                                peer.put("port", port);
-                                peer.put("storeName", json.optString("storeName", "SimpelKasir"));
-                                peer.put("deviceName", json.optString("deviceName", "Android"));
-                                peer.put("productCount", json.optInt("productCount", 0));
-                                peer.put("fileName", json.optString("fileName", "Products_SimpelKasir.csv"));
-                                found.put(key, peer);
-                            }
-                        } catch (SocketTimeoutException ignored) {
-                            break;
+                            sock.close();
                         } catch (Exception ignored) {}
                     }
                 }
-            } catch (Exception e) {
-                call.reject("Gagal memindai WiFi: " + e.getMessage());
-                return;
-            } finally {
-                if (sock != null) {
+
+                // Wait briefly for HTTP subnet probes to wrap up (max ~1.2s more)
+                long deadline = System.currentTimeMillis() + 1200;
+                for (Future<?> f : httpFutures) {
+                    long rem = deadline - System.currentTimeMillis();
+                    if (rem <= 0) break;
                     try {
-                        sock.close();
+                        f.get(rem, TimeUnit.MILLISECONDS);
                     } catch (Exception ignored) {}
                 }
+            } finally {
+                httpScanPool.shutdownNow();
+                releaseMulticastLock(discoverLock);
             }
 
             JSArray arr = new JSArray();
@@ -1003,7 +1211,7 @@ public class BluetoothPrinterPlugin extends Plugin {
         }
 
         wifiExecutor.execute(() -> {
-            String base = rawAddress.trim();
+            String base = rawAddress.trim().replaceAll("\\s+", "");
             if (base.startsWith("http://")) base = base.substring(7);
             else if (base.startsWith("https://")) base = base.substring(8);
             int slashIdx = base.indexOf('/');
@@ -1019,6 +1227,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                 HttpURLConnection infoConn = (HttpURLConnection) new URL(baseUrl + "/info").openConnection();
                 infoConn.setConnectTimeout(3000);
                 infoConn.setReadTimeout(4000);
+                infoConn.setRequestProperty("Connection", "close");
                 if (infoConn.getResponseCode() == 200) {
                     try (InputStream is = infoConn.getInputStream();
                          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
@@ -1037,7 +1246,8 @@ public class BluetoothPrinterPlugin extends Plugin {
             try {
                 conn = (HttpURLConnection) new URL(baseUrl + "/products.csv").openConnection();
                 conn.setConnectTimeout(5000);
-                conn.setReadTimeout(15000);
+                conn.setReadTimeout(20000);
+                conn.setRequestProperty("Connection", "close");
                 int code = conn.getResponseCode();
                 if (code != 200) {
                     throw new IOException("Server merespons HTTP " + code);
@@ -1054,6 +1264,9 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
 
                 String csvContent = new String(csvBytes, StandardCharsets.UTF_8);
+                if (csvContent.startsWith("\uFEFF")) {
+                    csvContent = csvContent.substring(1);
+                }
                 if (csvContent.trim().isEmpty()) {
                     throw new IOException("File CSV yang diterima kosong.");
                 }
@@ -1069,8 +1282,26 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
 
                 String savedPath = "";
+                String saveWarning = "";
                 if (saveToSimpelKasir) {
-                    savedPath = writeBytesToDownloads(chosenName, csvBytes, "text/csv", "SimpelKasir");
+                    try {
+                        savedPath = writeBytesToDownloads(chosenName, csvBytes, "text/csv", "SimpelKasir");
+                    } catch (Exception saveErr) {
+                        saveWarning = saveErr.getMessage() != null ? saveErr.getMessage() : "Gagal tulis ke Download";
+                        try {
+                            File appDl = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                            if (appDl != null) {
+                                File subDir = new File(appDl, "SimpelKasir");
+                                if (!subDir.exists()) subDir.mkdirs();
+                                File outFile = new File(subDir, chosenName);
+                                try (FileOutputStream fos = new FileOutputStream(outFile)) {
+                                    fos.write(csvBytes);
+                                    fos.flush();
+                                }
+                                savedPath = "Android/data/.../SimpelKasir/" + chosenName;
+                            }
+                        } catch (Exception ignored) {}
+                    }
                 }
 
                 JSObject res = new JSObject();
@@ -1079,9 +1310,12 @@ public class BluetoothPrinterPlugin extends Plugin {
                 res.put("fileName", chosenName);
                 res.put("savedPath", savedPath);
                 res.put("storeName", storeName);
+                if (!saveWarning.isEmpty()) {
+                    res.put("saveWarning", saveWarning);
+                }
                 call.resolve(res);
             } catch (Exception e) {
-                call.reject("Gagal menerima CSV dari " + base + ". Pastikan pengirim aktif & di WiFi/Hotspot yang sama. Detail: " + e.getMessage());
+                call.reject("Gagal menerima CSV dari " + base + " (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "). Pastikan ke-2 HP di WiFi/Hotspot sama dan halaman Kirim CSV masih terbuka.");
             } finally {
                 if (conn != null) conn.disconnect();
             }
@@ -1118,6 +1352,63 @@ public class BluetoothPrinterPlugin extends Plugin {
         activeAddress = null;
     }
 
+    private int getPreferredConnectMode(String address) {
+        if (address == null || address.isEmpty()) return MODE_INSECURE_SPP;
+        Integer cached = preferredConnectModeMap.get(address);
+        if (cached != null) return cached;
+        try {
+            SharedPreferences prefs = getContext().getSharedPreferences(PREFS_BT, Context.MODE_PRIVATE);
+            int saved = prefs.getInt("bt_mode_" + address, 0);
+            if (saved >= MODE_SECURE_SPP && saved <= MODE_REFLECTION_CH1) {
+                preferredConnectModeMap.put(address, saved);
+                return saved;
+            }
+        } catch (Exception ignored) {}
+        return MODE_INSECURE_SPP;
+    }
+
+    private void savePreferredConnectMode(String address, int mode) {
+        if (address == null || address.isEmpty()) return;
+        preferredConnectModeMap.put(address, mode);
+        try {
+            getContext()
+                .getSharedPreferences(PREFS_BT, Context.MODE_PRIVATE)
+                .edit()
+                .putInt("bt_mode_" + address, mode)
+                .apply();
+        } catch (Exception ignored) {}
+    }
+
+    private static void safeCloseSocket(BluetoothSocket s) {
+        if (s != null) {
+            try {
+                s.close();
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private BluetoothSocket tryOpenSocketByMode(BluetoothDevice device, int mode) throws Exception {
+        BluetoothSocket socket = null;
+        try {
+            if (mode == MODE_INSECURE_SPP) {
+                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
+            } else if (mode == MODE_SECURE_SPP) {
+                socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
+            } else {
+                Method m = device.getClass().getMethod("createRfcommSocket", int.class);
+                socket = (BluetoothSocket) m.invoke(device, 1);
+            }
+            if (socket == null) {
+                throw new IOException("Gagal membuat socket RFCOMM mode " + mode);
+            }
+            socket.connect();
+            return socket;
+        } catch (Exception e) {
+            safeCloseSocket(socket);
+            throw e;
+        }
+    }
+
     private BluetoothSocket connectWithFallback(BluetoothAdapter adapter, BluetoothDevice device) throws Exception {
         try {
             if (adapter.isDiscovering()) {
@@ -1132,33 +1423,31 @@ public class BluetoothPrinterPlugin extends Plugin {
             }
         } catch (Exception ignored) {}
 
-        Exception lastError = null;
-
-        try {
-            BluetoothSocket s1 = device.createRfcommSocketToServiceRecord(SPP_UUID);
-            s1.connect();
-            return s1;
-        } catch (Exception e1) {
-            lastError = e1;
-        }
-
-        try {
-            BluetoothSocket s2 = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
-            s2.connect();
-            return s2;
-        } catch (Exception e2) {
-            lastError = e2;
-        }
-
-        try {
-            Method m = device.getClass().getMethod("createRfcommSocket", int.class);
-            BluetoothSocket s3 = (BluetoothSocket) m.invoke(device, 1);
-            if (s3 != null) {
-                s3.connect();
-                return s3;
+        String address = device.getAddress();
+        int preferred = getPreferredConnectMode(address);
+        int[] baseOrder = { MODE_INSECURE_SPP, MODE_SECURE_SPP, MODE_REFLECTION_CH1 };
+        int[] tryOrder = new int[3];
+        tryOrder[0] = preferred;
+        int idx = 1;
+        for (int m : baseOrder) {
+            if (m != preferred && idx < tryOrder.length) {
+                tryOrder[idx++] = m;
             }
-        } catch (Exception e3) {
-            lastError = e3;
+        }
+
+        Exception lastError = null;
+        for (int mode : tryOrder) {
+            try {
+                BluetoothSocket s = tryOpenSocketByMode(device, mode);
+                if (mode != preferred) {
+                    savePreferredConnectMode(address, mode);
+                } else if (!preferredConnectModeMap.containsKey(address)) {
+                    savePreferredConnectMode(address, mode);
+                }
+                return s;
+            } catch (Exception e) {
+                lastError = e;
+            }
         }
 
         throw (lastError != null) ? lastError : new IOException("Tidak dapat membuka koneksi RFCOMM ke printer.");
