@@ -178,7 +178,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
       });
       notify(`${imported.length} produk diimpor (menggantikan daftar sebelumnya)`);
     };
-    reader.readAsText(file);
+    reader.readAsText(file, 'UTF-8');
     e.target.value = '';
   };
 
@@ -353,7 +353,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
           <input
             ref={backupInputRef}
             type="file"
-            accept=".json,application/json,text/plain"
+            accept=".json,application/json,text/plain,application/octet-stream,*/*"
             className="hidden"
             onChange={handleBackupImport}
           />
@@ -1042,14 +1042,14 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
           <input
             ref={backupInputRef}
             type="file"
-            accept=".json,application/json,text/plain"
+            accept=".json,application/json,text/plain,application/octet-stream,*/*"
             className="hidden"
             onChange={handleBackupImport}
           />
           <input
             ref={csvImportRef}
             type="file"
-            accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel"
+            accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel,application/csv,application/octet-stream,*/*"
             className="hidden"
             onChange={handleCsvImport}
           />

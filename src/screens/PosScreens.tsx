@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownAZ,
   Settings,
@@ -78,6 +78,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [showSearchBox, setShowSearchBox] = useState(true);
   const [filterInCartOnly, setFilterInCartOnly] = useState(false);
   const [sortAsc, setSortAsc] = useState(true);
+  const [visibleLimit, setVisibleLimit] = useState(100);
   const [qtyPopupProduct, setQtyPopupProduct] = useState<Product | null>(null);
   const [qtyInputVal, setQtyInputVal] = useState(1);
   const [priceInputVal, setPriceInputVal] = useState(0);
@@ -141,8 +142,15 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
 
-  const getCartQty = (productId: string) =>
-    draft.items.find((it) => it.productId === productId)?.qty || 0;
+  const cartQtyMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const it of draft.items) {
+      map.set(it.productId, it.qty);
+    }
+    return map;
+  }, [draft.items]);
+
+  const getCartQty = (productId: string) => cartQtyMap.get(productId) || 0;
 
   const adjustProductQty = (product: Product, delta: number) => {
     setDraft((prev) => {
@@ -214,29 +222,47 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
     });
   };
 
+  const sortedProducts = useMemo(() => {
+    const collator = new Intl.Collator('id', { sensitivity: 'base' });
+    return [...data.products].sort((a, b) =>
+      sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)
+    );
+  }, [data.products, sortAsc]);
+
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return data.products
-      .filter((p) => {
-        if (filterInCartOnly && getCartQty(p.id) <= 0) return false;
-        if (!q) return true;
-        if (data.productSettings.strictSearch) {
-          return (
-            p.name.toLowerCase().startsWith(q) ||
-            p.sku.toLowerCase() === q ||
-            p.barcode.toLowerCase() === q
-          );
-        }
+    return sortedProducts.filter((p) => {
+      if (filterInCartOnly && (cartQtyMap.get(p.id) || 0) <= 0) return false;
+      if (!q) return true;
+      if (data.productSettings.strictSearch) {
         return (
-          p.name.toLowerCase().includes(q) ||
-          p.sku.toLowerCase().includes(q) ||
-          p.barcode.toLowerCase().includes(q)
+          p.name.toLowerCase().startsWith(q) ||
+          p.sku.toLowerCase() === q ||
+          p.barcode.toLowerCase() === q
         );
-      })
-      .sort((a, b) =>
-        sortAsc ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name)
+      }
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.sku.toLowerCase().includes(q) ||
+        p.barcode.toLowerCase().includes(q)
       );
-  }, [data.products, searchQuery, filterInCartOnly, sortAsc, draft.items, data.productSettings.strictSearch]);
+    });
+  }, [
+    sortedProducts,
+    searchQuery,
+    filterInCartOnly,
+    filterInCartOnly ? cartQtyMap : null,
+    data.productSettings.strictSearch,
+  ]);
+
+  useEffect(() => {
+    setVisibleLimit(100);
+  }, [searchQuery, filterInCartOnly, sortAsc, data.products]);
+
+  const visibleProducts = useMemo(
+    () => filteredProducts.slice(0, visibleLimit),
+    [filteredProducts, visibleLimit]
+  );
 
   const handleBarcodeLookup = () => {
     const code = barcodeText.trim();
@@ -418,7 +444,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               </button>
             </div>
           ) : (
-            filteredProducts.map((product) => {
+            visibleProducts.map((product) => {
               const qty = getCartQty(product.id);
 
               const startPress = () => {
@@ -460,6 +486,11 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     <p className="font-display text-[16px] font-semibold text-[#17252B] dark:text-[#ECF1EF] leading-snug">
                       {product.name}
                     </p>
+                    {data.productSettings.useSku && product.sku && (
+                      <p className="mt-0.5 text-xs font-medium text-slate-500 dark:text-slate-400 truncate">
+                        {product.sku}
+                      </p>
+                    )}
                     <p className="mt-0.5 text-sm font-semibold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
                       {formatMoney(product.sellPrice, data.currencySymbol)}
                       {data.businessFlags.useStock && (
@@ -502,6 +533,17 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               );
             })
           )}
+          {filteredProducts.length > visibleLimit && (
+            <div className="p-4 text-center">
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((v) => v + 100)}
+                className="btn-lux-soft w-full rounded-xl py-2.5 text-xs font-bold text-[#165B49] dark:text-[#4BB89A]"
+              >
+                Tampilkan 100 Produk Lainnya ({filteredProducts.length - visibleLimit} tersisa)
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Floating Luxury Emerald Checkout Bar + Reset Button */}
@@ -542,6 +584,11 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white truncate">
                 {qtyPopupProduct.name}
               </h3>
+              {data.productSettings.useSku && qtyPopupProduct.sku && (
+                <p className="mt-0.5 text-xs font-semibold text-[#165B49] dark:text-[#4BB89A] truncate">
+                  {qtyPopupProduct.sku}
+                </p>
+              )}
               <p className="mt-0.5 text-xs text-slate-500">
                 Ketik jumlah (tahan baris produk untuk edit master produk)
               </p>

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search,
   ArrowDownAZ,
@@ -61,6 +61,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
   const [search, setSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [sortAsc, setSortAsc] = useState(true);
+  const [visibleLimit, setVisibleLimit] = useState(100);
   const [showCsvMenu, setShowCsvMenu] = useState(false);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -127,10 +128,15 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
 
   const filteredProducts = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const collator = new Intl.Collator('id', { sensitivity: 'base' });
     return [...data.products]
       .filter((p) => !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q) || p.barcode.toLowerCase().includes(q))
-      .sort((a, b) => (sortAsc ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name)));
+      .sort((a, b) => (sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)));
   }, [data.products, search, sortAsc]);
+
+  useEffect(() => {
+    setVisibleLimit(100);
+  }, [search, sortAsc, screen, data.products]);
 
   // =========================================================
   // 1. PRODUK LIST
@@ -178,7 +184,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
         });
         notify(`${imported.length} produk diimpor (menggantikan daftar sebelumnya)`);
       };
-      reader.readAsText(file);
+      reader.readAsText(file, 'UTF-8');
       e.target.value = '';
       setShowCsvMenu(false);
     };
@@ -247,7 +253,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
               <input
                 ref={csvInputRef}
                 type="file"
-                accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel"
+                accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel,application/csv,application/octet-stream,*/*"
                 className="hidden"
                 onChange={handleImportCsv}
               />
@@ -274,7 +280,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
         )}
 
         <div className="mx-auto w-full max-w-4xl divide-y divide-[#EAECE8] dark:divide-[#223039] bg-white dark:bg-[#151E24]">
-          {filteredProducts.map((p) => {
+          {filteredProducts.slice(0, visibleLimit).map((p) => {
             const profit = p.sellPrice - p.costPrice;
             return (
               <button
@@ -307,6 +313,17 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
               </button>
             );
           })}
+          {filteredProducts.length > visibleLimit && (
+            <div className="p-4 text-center">
+              <button
+                type="button"
+                onClick={() => setVisibleLimit((v) => v + 100)}
+                className="btn-lux-soft w-full rounded-xl py-2.5 text-xs font-bold text-[#165B49] dark:text-[#4BB89A]"
+              >
+                Tampilkan 100 Produk Lainnya ({filteredProducts.length - visibleLimit} tersisa)
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Luxury Emerald FAB + */}
@@ -994,7 +1011,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
     <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418]">
       <TopBar title="Katalog" mode="menu" onLeftClick={onOpenDrawer} />
       <div className="mx-auto grid w-full max-w-4xl grid-cols-2 gap-3 p-4 sm:grid-cols-3">
-        {data.products.map((p) => (
+        {data.products.slice(0, visibleLimit).map((p) => (
           <div
             key={p.id}
             className="surface-card flex flex-col overflow-hidden rounded-2xl"
@@ -1022,6 +1039,17 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
             </div>
           </div>
         ))}
+        {data.products.length > visibleLimit && (
+          <div className="col-span-full pt-1 text-center">
+            <button
+              type="button"
+              onClick={() => setVisibleLimit((v) => v + 100)}
+              className="btn-lux-soft w-full rounded-xl py-2.5 text-xs font-bold text-[#165B49] dark:text-[#4BB89A]"
+            >
+              Tampilkan 100 Produk Lainnya ({data.products.length - visibleLimit} tersisa)
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

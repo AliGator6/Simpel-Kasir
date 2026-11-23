@@ -360,6 +360,52 @@ export function exportProductsToCsv(products: Product[]): string {
   return [header, ...rows].join('\n');
 }
 
+function splitCsvRecords(text: string): string[] {
+  const records: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        cur += '""';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      cur += ch;
+    } else if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      if (cur.trim().length > 0) records.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim().length > 0) records.push(cur);
+  return records;
+}
+
+function detectCsvDelimiter(headerLine: string): string {
+  let comma = 0;
+  let semi = 0;
+  let tab = 0;
+  let inQuotes = false;
+  for (let i = 0; i < headerLine.length; i++) {
+    const ch = headerLine[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes) {
+      if (ch === ',') comma++;
+      else if (ch === ';') semi++;
+      else if (ch === '\t') tab++;
+    }
+  }
+  if (tab > comma && tab > semi) return '\t';
+  if (semi > comma) return ';';
+  return ',';
+}
+
 function splitCsvRow(row: string, delimiter: string): string[] {
   const out: string[] = [];
   let cur = '';
@@ -402,47 +448,91 @@ function parseFlexibleNumber(raw: string | undefined): number {
 
 export function parseProductsFromCsv(csvText: string): Product[] {
   const cleanText = csvText.replace(/^\uFEFF/, '');
-  const lines = cleanText.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const lines = splitCsvRecords(cleanText);
   if (lines.length === 0) return [];
 
   const firstLine = lines[0];
-  const commaCount = (firstLine.match(/,/g) || []).length;
-  const semiCount = (firstLine.match(/;/g) || []).length;
-  const tabCount = (firstLine.match(/\t/g) || []).length;
-  const delimiter = tabCount > commaCount && tabCount > semiCount ? '\t' : semiCount > commaCount ? ';' : ',';
+  const delimiter = detectCsvDelimiter(firstLine);
+  const firstCols = splitCsvRow(firstLine, delimiter).map((h) =>
+    h.toLowerCase().trim().replace(/\s+/g, ' ')
+  );
 
-  const firstCols = splitCsvRow(firstLine, delimiter).map((h) => h.toLowerCase().trim());
+  const usedCols = new Set<number>();
+  const findCol = (aliases: string[], excludes: string[] = []): number => {
+    // Pass 1: exact header match (priority by alias order)
+    for (const a of aliases) {
+      const idx = firstCols.findIndex((h, i) => !usedCols.has(i) && h === a);
+      if (idx !== -1) {
+        usedCols.add(idx);
+        return idx;
+      }
+    }
+    // Pass 2: partial header match (excluding ambiguous headers like "Non Stok" or "Harga Pokok")
+    for (const a of aliases) {
+      const idx = firstCols.findIndex(
+        (h, i) =>
+          !usedCols.has(i) &&
+          !excludes.some((ex) => h.includes(ex)) &&
+          h.includes(a)
+      );
+      if (idx !== -1) {
+        usedCols.add(idx);
+        return idx;
+      }
+    }
+    return -1;
+  };
 
-  const findCol = (aliases: string[]) =>
-    firstCols.findIndex((h) => aliases.some((a) => h === a || h.includes(a)));
-
-  const idxName = findCol(['nama produk', 'nama barang', 'nama', 'produk', 'barang', 'item', 'name']);
-  const idxSku = findCol(['kode produk', 'kode barang', 'sku', 'kode', 'code']);
-  const idxCost = findCol(['harga pokok', 'harga beli', 'harga modal', 'modal', 'hpp', 'pokok', 'beli', 'cost']);
-  const idxSell = findCol(['harga jual', 'harga1', 'harga', 'jual', 'price', 'sell']);
-  const idxStock = findCol(['stok', 'stock', 'qty', 'jumlah', 'sisa']);
-  const idxUnit = findCol(['satuan', 'unit', 'uom']);
+  const idxName = findCol(
+    ['nama produk', 'nama barang', 'produk', 'nama', 'barang', 'item', 'name'],
+    ['kode', 'grup', 'group', 'kategori', 'id']
+  );
+  const idxCost = findCol([
+    'harga pokok',
+    'harga beli',
+    'harga modal',
+    'hpp',
+    'modal',
+    'pokok',
+    'beli',
+    'cost',
+  ]);
+  const idxSell = findCol(
+    ['harga jual', 'harga1', 'harga', 'jual', 'price', 'sell'],
+    ['pokok', 'beli', 'modal', 'hpp']
+  );
+  const idxStock = findCol(
+    ['stok', 'stock', 'qty', 'jumlah', 'sisa'],
+    ['non stok', 'non-stok', 'nonstok']
+  );
   const idxCat = findCol(['kategori', 'grup produk', 'grup', 'group', 'category']);
+  const idxUnit = findCol(['satuan', 'unit', 'uom']);
   const idxBarcode = findCol(['barcode', 'ean', 'upc']);
+  const idxSku = findCol(['kode produk', 'kode barang', 'sku', 'kode', 'code']);
   const idxNote = findCol(['keterangan', 'catatan', 'deskripsi', 'note', 'desc']);
 
   const hasHeader = idxName !== -1 || idxSell !== -1 || idxCost !== -1 || idxStock !== -1;
   const startRow = hasHeader ? 1 : 0;
 
+  const getVal = (cols: string[], headerIdx: number, fallbackIdx: number): string => {
+    const colIndex = hasHeader ? headerIdx : fallbackIdx;
+    return colIndex >= 0 && colIndex < cols.length ? (cols[colIndex] || '').trim() : '';
+  };
+
   const out: Product[] = [];
   const baseTs = Date.now();
   for (let i = startRow; i < lines.length; i++) {
     const cols = splitCsvRow(lines[i], delimiter);
-    const name = (cols[hasHeader && idxName !== -1 ? idxName : 0] || '').trim();
+    const name = getVal(cols, idxName, 0);
     if (!name) continue;
-    const sku = (cols[hasHeader && idxSku !== -1 ? idxSku : 1] || '').trim();
-    const costPrice = parseFlexibleNumber(cols[hasHeader && idxCost !== -1 ? idxCost : 2]);
-    const sellPrice = parseFlexibleNumber(cols[hasHeader && idxSell !== -1 ? idxSell : 3]);
-    const stock = parseFlexibleNumber(cols[hasHeader && idxStock !== -1 ? idxStock : 4]);
-    const unit = (cols[hasHeader && idxUnit !== -1 ? idxUnit : 5] || 'pcs').trim() || 'pcs';
-    const category = (cols[hasHeader && idxCat !== -1 ? idxCat : 6] || 'Lainnya').trim() || 'Lainnya';
-    const barcode = (cols[hasHeader && idxBarcode !== -1 ? idxBarcode : 7] || '').trim();
-    const catalogNote = (cols[hasHeader && idxNote !== -1 ? idxNote : 8] || '').trim();
+    const sku = getVal(cols, idxSku, 1);
+    const costPrice = parseFlexibleNumber(getVal(cols, idxCost, 2));
+    const sellPrice = parseFlexibleNumber(getVal(cols, idxSell, 3));
+    const stock = parseFlexibleNumber(getVal(cols, idxStock, 4));
+    const unit = getVal(cols, idxUnit, 5) || 'pcs';
+    const category = getVal(cols, idxCat, 6) || 'Lainnya';
+    const barcode = getVal(cols, idxBarcode, 7);
+    const catalogNote = getVal(cols, idxNote, 8);
 
     out.push({
       id: `p-csv-${baseTs}-${i}`,
