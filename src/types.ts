@@ -21,10 +21,12 @@ export type ScreenId =
   | 'settings_printer'
   | 'settings_users'
   | 'settings_store'
-  | 'settings_backup';
+  | 'settings_backup'
+  | 'sync';
 
 export type PaymentStatus = 'lunas' | 'kurang' | 'belum_dibayar';
 export type ProgressStatus = 'antri' | 'proses' | 'selesai' | 'diambil';
+export type PosRowDensity = 'tight' | 'compact' | 'normal';
 
 export interface StoreInfo {
   name: string;
@@ -159,6 +161,7 @@ export interface ProductSettings {
   useFixedProfit: boolean;
   strictSearch: boolean;
   autoNoteAltPrice: boolean;
+  posRowDensity?: PosRowDensity;
 }
 
 export interface ReceiptSettings {

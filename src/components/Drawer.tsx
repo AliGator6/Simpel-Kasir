@@ -9,6 +9,7 @@ import {
   Calculator,
   LayoutGrid,
   BarChart3,
+  Wifi,
   Settings,
   Store,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ const MENU_ITEMS: { id: ScreenId; label: string; icon: React.ComponentType<{ cla
   { id: 'cashflow', label: 'Arus Kas', icon: Calculator },
   { id: 'master', label: 'Master', icon: LayoutGrid },
   { id: 'reports', label: 'Laporan', icon: BarChart3 },
+  { id: 'sync', label: 'Sinkron', icon: Wifi },
   { id: 'settings', label: 'Pengaturan', icon: Settings },
 ];
 
@@ -54,6 +56,7 @@ export const Drawer: React.FC<DrawerProps> = ({
         onClick={onClose}
       />
       <aside className="relative z-10 flex h-full w-[292px] max-w-[82vw] flex-col bg-[#F9FAF8] dark:bg-[#131C21] shadow-2xl border-r border-[#E2E6E1] dark:border-[#223039]">
+        {/* Header Drawer */}
         <div className="bg-gradient-to-br from-[#132622] via-[#18312C] to-[#0E1D1A] px-4 py-5 text-white flex items-center gap-3.5 border-b border-white/10">
           <div className="h-14 w-14 shrink-0 rounded-2xl bg-white/95 p-1 flex items-center justify-center shadow-md ring-1 ring-white/25">
             <SimpelKasirLogo size={46} className="rounded-xl" />
@@ -75,6 +78,7 @@ export const Drawer: React.FC<DrawerProps> = ({
           </div>
         </div>
 
+        {/* Menu List */}
         <nav className="flex-1 overflow-y-auto p-2.5 space-y-1">
           {MENU_ITEMS.map((item) => {
             const Icon = item.icon;

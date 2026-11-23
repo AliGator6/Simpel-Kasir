@@ -49,6 +49,10 @@ jobs:
             const p = "android/app/src/main/AndroidManifest.xml";
             let xml = fs.readFileSync(p, "utf8");
             const perms = [
+              "<uses-permission android:name=\"android.permission.INTERNET\" />",
+              "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />",
+              "<uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\" />",
+              "<uses-permission android:name=\"android.permission.CHANGE_WIFI_MULTICAST_STATE\" />",
               "<uses-permission android:name=\"android.permission.BLUETOOTH\" android:maxSdkVersion=\"30\" />",
               "<uses-permission android:name=\"android.permission.BLUETOOTH_ADMIN\" android:maxSdkVersion=\"30\" />",
               "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" android:maxSdkVersion=\"30\" />",
@@ -56,11 +60,13 @@ jobs:
               "<uses-permission android:name=\"android.permission.BLUETOOTH_SCAN\" android:usesPermissionFlags=\"neverForLocation\" />",
               "<uses-permission android:name=\"android.permission.BLUETOOTH_CONNECT\" />",
               "<uses-feature android:name=\"android.hardware.bluetooth\" android:required=\"false\" />"
-            ].join("\n    ");
-            if (!xml.includes("neverForLocation")) {
-              xml = xml.replace("<application", perms + "\n    <application");
-              fs.writeFileSync(p, xml);
+            ];
+            for (const tag of perms) {
+              if (!xml.includes(tag)) {
+                xml = xml.replace("<application", tag + "\n    <application");
+              }
             }
+            fs.writeFileSync(p, xml);
           '
           npx cap sync android
           node -e '

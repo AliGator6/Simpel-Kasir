@@ -46,6 +46,7 @@ export const DEFAULT_APP_DATA: AppData = {
     useFixedProfit: false,
     strictSearch: false,
     autoNoteAltPrice: false,
+    posRowDensity: 'normal',
   },
   receiptSettings: {
     paperWidth: '58',

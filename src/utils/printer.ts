@@ -9,6 +9,32 @@ export interface PairedDevice {
   isPrinter?: boolean;
 }
 
+export interface WifiSyncServerInfo {
+  ok: boolean;
+  ips: string[];
+  port: number;
+  deviceName: string;
+  fileName: string;
+  productCount: number;
+}
+
+export interface WifiDiscoveredPeer {
+  ip: string;
+  port: number;
+  storeName: string;
+  deviceName: string;
+  productCount: number;
+  fileName: string;
+}
+
+export interface WifiDownloadResult {
+  ok: boolean;
+  content: string;
+  fileName: string;
+  savedPath: string;
+  storeName: string;
+}
+
 interface NativePrinterPlugin {
   listPaired(): Promise<{ devices: PairedDevice[] }>;
   scanDevices?(): Promise<{ devices: PairedDevice[] }>;
@@ -17,7 +43,25 @@ interface NativePrinterPlugin {
   testConnection?(options: { address: string }): Promise<{ ok: boolean }>;
   printBytes(options: { address: string; base64: string }): Promise<{ ok: boolean }>;
   testPrint(options: { address: string; paperWidth: string; bottomFeedMm?: number }): Promise<{ ok: boolean }>;
-  saveFileToDownloads?(options: { fileName: string; content: string; mimeType: string }): Promise<{ ok: boolean; path?: string }>;
+  saveFileToDownloads?(options: {
+    fileName: string;
+    content: string;
+    mimeType: string;
+    subFolder?: string;
+  }): Promise<{ ok: boolean; path?: string }>;
+  startWifiCsvServer?(options: {
+    content: string;
+    fileName: string;
+    storeName: string;
+    productCount: number;
+  }): Promise<WifiSyncServerInfo>;
+  stopWifiCsvServer?(): Promise<{ ok: boolean }>;
+  discoverWifiCsvServers?(): Promise<{ servers: WifiDiscoveredPeer[] }>;
+  downloadWifiCsv?(options: {
+    address: string;
+    saveToSimpelKasir?: boolean;
+    fileName?: string;
+  }): Promise<WifiDownloadResult>;
 }
 
 interface CapacitorBridgeWindow {
@@ -73,6 +117,13 @@ function getNativePrinter(): NativePrinterPlugin | null {
       testPrint: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testPrint', options),
       saveFileToDownloads: (options) =>
         np<{ ok: boolean; path?: string }>('BluetoothPrinter', 'saveFileToDownloads', options),
+      startWifiCsvServer: (options) =>
+        np<WifiSyncServerInfo>('BluetoothPrinter', 'startWifiCsvServer', options),
+      stopWifiCsvServer: () => np<{ ok: boolean }>('BluetoothPrinter', 'stopWifiCsvServer', {}),
+      discoverWifiCsvServers: () =>
+        np<{ servers: WifiDiscoveredPeer[] }>('BluetoothPrinter', 'discoverWifiCsvServers', {}),
+      downloadWifiCsv: (options) =>
+        np<WifiDownloadResult>('BluetoothPrinter', 'downloadWifiCsv', options),
     };
     return cachedNativePrinter;
   }
@@ -99,13 +150,17 @@ export async function autoConnectBluetoothPrinter(address: string): Promise<bool
 export async function saveExportFile(
   fileName: string,
   content: string,
-  mimeType: string
+  mimeType: string,
+  subFolder?: string
 ): Promise<{ savedPath: string; isNative: boolean }> {
   const native = getNativePrinter();
   if (native && typeof native.saveFileToDownloads === 'function') {
-    const res = await native.saveFileToDownloads({ fileName, content, mimeType });
+    const res = await native.saveFileToDownloads({ fileName, content, mimeType, subFolder });
     if (res?.ok) {
-      return { savedPath: res.path || `Download/${fileName}`, isNative: true };
+      return {
+        savedPath: res.path || (subFolder ? `Download/${subFolder}/${fileName}` : `Download/${fileName}`),
+        isNative: true,
+      };
     }
   }
 
@@ -117,6 +172,47 @@ export async function saveExportFile(
   a.click();
   URL.revokeObjectURL(url);
   return { savedPath: fileName, isNative: false };
+}
+
+export async function startWifiCsvServer(options: {
+  content: string;
+  fileName: string;
+  storeName: string;
+  productCount: number;
+}): Promise<WifiSyncServerInfo> {
+  const native = getNativePrinter();
+  if (!native || typeof native.startWifiCsvServer !== 'function') {
+    throw new Error('Kirim CSV via WiFi langsung hanya tersedia di aplikasi APK Android.');
+  }
+  return native.startWifiCsvServer(options);
+}
+
+export async function stopWifiCsvServer(): Promise<void> {
+  const native = getNativePrinter();
+  if (native && typeof native.stopWifiCsvServer === 'function') {
+    await native.stopWifiCsvServer();
+  }
+}
+
+export async function discoverWifiCsvServers(): Promise<WifiDiscoveredPeer[]> {
+  const native = getNativePrinter();
+  if (!native || typeof native.discoverWifiCsvServers !== 'function') {
+    throw new Error('Cari perangkat WiFi hanya tersedia di aplikasi APK Android.');
+  }
+  const res = await native.discoverWifiCsvServers();
+  return res.servers || [];
+}
+
+export async function downloadWifiCsvFromPeer(
+  address: string,
+  saveToSimpelKasir = true,
+  fileName?: string
+): Promise<WifiDownloadResult> {
+  const native = getNativePrinter();
+  if (native && typeof native.downloadWifiCsv === 'function') {
+    return native.downloadWifiCsv({ address, saveToSimpelKasir, fileName });
+  }
+  throw new Error('Terima CSV via WiFi hanya tersedia di aplikasi APK Android.');
 }
 
 export async function scanPairedBluetoothPrinters(): Promise<PairedDevice[]> {

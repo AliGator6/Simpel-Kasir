@@ -14,6 +14,7 @@ import { PosFlowScreens } from './screens/PosScreens';
 import { InventoryScreens } from './screens/InventoryScreens';
 import { FinanceScreens } from './screens/FinanceScreens';
 import { SettingsScreens } from './screens/SettingsScreens';
+import { SyncScreen } from './screens/SyncScreen';
 
 declare global {
   interface Window {
@@ -388,6 +389,15 @@ export default function App() {
             )
           }
           onNavigate={navigate}
+          onUpdateData={setData}
+          notify={notify}
+        />
+      )}
+
+      {screen === 'sync' && (
+        <SyncScreen
+          data={data}
+          onOpenDrawer={() => setDrawerOpen(true)}
           onUpdateData={setData}
           notify={notify}
         />
