@@ -14,7 +14,6 @@ import { PosFlowScreens } from './screens/PosScreens';
 import { InventoryScreens } from './screens/InventoryScreens';
 import { FinanceScreens } from './screens/FinanceScreens';
 import { SettingsScreens } from './screens/SettingsScreens';
-import { autoConnectBluetoothPrinter } from './utils/printer';
 
 declare global {
   interface Window {
@@ -45,36 +44,6 @@ export default function App() {
   useEffect(() => {
     saveActiveDraft(draft);
   }, [draft]);
-
-  // Event-driven auto-connect printer (zero polling -> ultra low battery usage)
-  const btAddress =
-    data.printerSettings.connectionType === 'bluetooth'
-      ? data.printerSettings.selectedPrinterAddress
-      : '';
-
-  useEffect(() => {
-    if (!btAddress) return;
-    const t = window.setTimeout(() => {
-      autoConnectBluetoothPrinter(btAddress);
-    }, 350);
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        autoConnectBluetoothPrinter(btAddress);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearTimeout(t);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [btAddress]);
-
-  useEffect(() => {
-    if (!btAddress) return;
-    if (screen === 'pos' || screen === 'cart' || screen === 'payment') {
-      autoConnectBluetoothPrinter(btAddress);
-    }
-  }, [btAddress, screen]);
 
   const notify = (msg: string) => {
     setToastMsg(msg);

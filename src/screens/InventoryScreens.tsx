@@ -291,7 +291,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                   {(data.productSettings.useSku || data.productSettings.useStock) && (
                     <p className="mt-0.5 text-xs text-slate-400">
                       {data.productSettings.useSku && p.sku ? p.sku : ''}
-                      {data.productSettings.useSku && p.sku && data.productSettings.useStock ? ' Â· ' : ''}
+                      {data.productSettings.useSku && p.sku && data.productSettings.useStock ? ' · ' : ''}
                       {data.productSettings.useStock ? `Stok: ${p.stock} ${p.unit || ''}` : ''}
                     </p>
                   )}
@@ -670,7 +670,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
               </div>
               <p className="font-display mt-4 text-base font-semibold">Belum ada Transaksi Cepat tersimpan</p>
               <p className="mt-1 max-w-xs text-xs text-slate-500">
-                Pilih produk di Transaksi Baru â†’ buka keranjang â†’ ketuk ikon Disket di kanan atas untuk menyimpan paket/pesanan cepat.
+                Pilih produk di Transaksi Baru → buka keranjang → ketuk ikon Disket di kanan atas untuk menyimpan paket/pesanan cepat.
               </p>
               <button
                 type="button"
@@ -699,7 +699,7 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                         {qc.items.map((i) => `${i.name} (${i.qty})`).join(', ')}
                       </p>
                       <p className="mt-1 text-sm font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
-                        {formatMoney(total, data.currencySymbol)} Â· {formatDateShort(qc.updatedAt)}
+                        {formatMoney(total, data.currencySymbol)} · {formatDateShort(qc.updatedAt)}
                       </p>
                     </button>
                     <button

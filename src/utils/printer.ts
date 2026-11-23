@@ -370,11 +370,15 @@ export async function printThermalTransaction(
     } else {
       bytes = buildEscPosReceiptBytes(tx, store, receiptCfg, printerCfg, currencySymbol);
     }
-    const base64 = uint8ToBase64(bytes);
-    await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
+    let payload = bytes;
     if (printerCfg.printTwice) {
-      await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
+      const doubled = new Uint8Array(bytes.length * 2);
+      doubled.set(bytes, 0);
+      doubled.set(bytes, bytes.length);
+      payload = doubled;
     }
+    const base64 = uint8ToBase64(payload);
+    await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
     return 'native';
   }
   window.print();

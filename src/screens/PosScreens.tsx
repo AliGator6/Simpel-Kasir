@@ -119,11 +119,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const shippingAmount = data.businessFlags.useShipping ? draft.shipping : 0;
   const grandTotal = Math.max(0, subtotal - draft.discount + taxAmount + shippingAmount);
 
-  const totalCost = useMemo(
-    () => draft.items.reduce((acc, it) => acc + it.costPrice * it.qty, 0),
-    [draft.items]
-  );
-  const totalProfit = grandTotal - shippingAmount - taxAmount - totalCost;
   const totalItemsCount = useMemo(
     () => draft.items.reduce((acc, it) => acc + it.qty, 0),
     [draft.items]
@@ -425,7 +420,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           ) : (
             filteredProducts.map((product) => {
               const qty = getCartQty(product.id);
-              const profit = product.sellPrice - product.costPrice;
 
               const startPress = () => {
                 longPressTriggeredRef.current = false;
@@ -472,11 +466,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                         <span className="ml-2 text-xs font-normal text-slate-400">· Stok: {product.stock}</span>
                       )}
                     </p>
-                    {qty > 0 && (
-                      <p className="mt-0.5 text-xs tabular-nums text-[#8C6A2E] dark:text-[#D5B26E]">
-                        Laba: {formatMoney(profit * qty, data.currencySymbol)}
-                      </p>
-                    )}
                   </div>
 
                   {/* Right Action Area: Tactile Keycap + or [- | Emerald Qty] */}
@@ -733,7 +722,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           <div className="divide-y divide-[#EAECE8] dark:divide-[#223039] bg-white dark:bg-[#151E24]">
             {draft.items.map((item) => {
               const lineSub = Math.max(0, item.unitPrice * item.qty - item.discount);
-              const lineProfit = lineSub - item.costPrice * item.qty;
               return (
                 <div key={item.productId} className="px-4 py-3.5">
                   <div className="flex items-baseline justify-between gap-2">
@@ -751,10 +739,11 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     {formatNumber(item.unitPrice)}
                     {item.discount > 0 && ` (Diskon -${formatNumber(item.discount)})`}
                   </p>
-                  <p className="text-xs tabular-nums text-slate-500 dark:text-slate-400">
-                    Laba: {formatNumber(lineProfit)}
-                    {item.note && ` · Cat: ${item.note}`}
-                  </p>
+                  {item.note && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Cat: {item.note}
+                    </p>
+                  )}
 
                   {/* 3 Action Buttons per Item */}
                   <div className="mt-2.5 flex items-center gap-2.5">
@@ -830,9 +819,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 <p className="font-display text-lg font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
                   <span className="mr-2 text-xs font-medium text-slate-500">Total</span>
                   {formatMoney(grandTotal, data.currencySymbol)}
-                </p>
-                <p className="mt-0.5 text-sm tabular-nums text-[#8C6A2E] dark:text-[#D5B26E]">
-                  Laba: {formatMoney(totalProfit, data.currencySymbol)}
                 </p>
                 {draft.discount > 0 && (
                   <p className="text-xs text-[#B54B54] tabular-nums">

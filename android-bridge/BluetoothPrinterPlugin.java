@@ -126,8 +126,6 @@ public class BluetoothPrinterPlugin extends Plugin {
                     int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
                     if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
                         closeActiveSocket();
-                    } else if (state == BluetoothAdapter.STATE_ON && preferredPrinterAddress != null) {
-                        trySilentAutoConnect(preferredPrinterAddress);
                     }
                 } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
                     @SuppressWarnings("deprecation")
@@ -135,19 +133,12 @@ public class BluetoothPrinterPlugin extends Plugin {
                     if (dev != null && dev.getAddress() != null && dev.getAddress().equals(activeAddress)) {
                         closeActiveSocket();
                     }
-                } else if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
-                    @SuppressWarnings("deprecation")
-                    BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                    if (dev != null && preferredPrinterAddress != null && preferredPrinterAddress.equals(dev.getAddress())) {
-                        trySilentAutoConnect(preferredPrinterAddress);
-                    }
                 }
             }
         };
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
-        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
         filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
 
         try {
@@ -159,19 +150,6 @@ public class BluetoothPrinterPlugin extends Plugin {
         } catch (Exception ignored) {
             btStateReceiver = null;
         }
-    }
-
-    private void trySilentAutoConnect(String address) {
-        if (address == null || address.isEmpty() || !hasConnectPermissions()) return;
-        executor.execute(() -> {
-            BluetoothAdapter adapter = getAdapter();
-            if (adapter == null || !adapter.isEnabled()) return;
-            try {
-                ensureConnectedSocket(adapter, address);
-            } catch (Exception ignored) {
-                // Silent failure when printer is powered off (no battery drain retries)
-            }
-        });
     }
 
     @PluginMethod
@@ -389,41 +367,14 @@ public class BluetoothPrinterPlugin extends Plugin {
 
     @PluginMethod
     public void autoConnect(PluginCall call) {
+        // Multi-HP mode: keep printer unlocked while idle so other phones can print anytime.
         String address = call.getString("address");
-        if (address == null || address.isEmpty()) {
-            JSObject res = new JSObject();
-            res.put("ok", false);
-            call.resolve(res);
-            return;
+        if (address != null && !address.isEmpty()) {
+            preferredPrinterAddress = address;
         }
-        preferredPrinterAddress = address;
-
-        if (!hasConnectPermissions()) {
-            JSObject res = new JSObject();
-            res.put("ok", false);
-            res.put("reason", "no_permission");
-            call.resolve(res);
-            return;
-        }
-
-        executor.execute(() -> {
-            JSObject res = new JSObject();
-            BluetoothAdapter adapter = getAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                res.put("ok", false);
-                res.put("reason", "bt_off");
-                call.resolve(res);
-                return;
-            }
-            try {
-                ensureConnectedSocket(adapter, address);
-                res.put("ok", true);
-            } catch (Exception e) {
-                res.put("ok", false);
-                res.put("reason", e.getMessage());
-            }
-            call.resolve(res);
-        });
+        JSObject res = new JSObject();
+        res.put("ok", true);
+        call.resolve(res);
     }
 
     @PluginMethod
@@ -472,8 +423,10 @@ public class BluetoothPrinterPlugin extends Plugin {
                 ok.put("ok", true);
                 call.resolve(ok);
             } catch (Exception e) {
+                call.reject("Gagal terhubung ke printer (" + address + "). Pastikan printer menyala & tidak sedang dipakai HP lain. Detail: " + e.getMessage());
+            } finally {
+                // Release immediately so other phones sharing the same printer stay unblocked
                 closeActiveSocket();
-                call.reject("Gagal terhubung ke printer (" + address + "). Pastikan printer menyala & tidak terhubung ke HP lain. Detail: " + e.getMessage());
             }
         });
     }
@@ -706,32 +659,34 @@ public class BluetoothPrinterPlugin extends Plugin {
                 call.reject("Bluetooth tidak aktif. Nyalakan Bluetooth di HP terlebih dahulu.");
                 return;
             }
-            try {
-                boolean wasAlreadyConnected;
-                synchronized (socketLock) {
-                    wasAlreadyConnected = (activeSocket != null && address.equals(activeAddress) && activeSocket.isConnected());
-                }
-                BluetoothSocket socket = ensureConnectedSocket(adapter, address);
-                if (!wasAlreadyConnected) {
-                    Thread.sleep(40);
-                }
+            Exception lastErr = null;
+            for (int attempt = 1; attempt <= 3; attempt++) {
                 try {
+                    BluetoothSocket socket = ensureConnectedSocket(adapter, address);
+                    Thread.sleep(30);
                     writePayloadFast(socket, payload);
-                } catch (IOException writeErr) {
-                    // Socket might have gone stale if printer restarted -> reconnect once cleanly
+                    // Short drain wait so printer finishes receiving buffer before disconnecting
+                    Thread.sleep(120);
                     closeActiveSocket();
-                    socket = ensureConnectedSocket(adapter, address);
-                    Thread.sleep(40);
-                    writePayloadFast(socket, payload);
-                }
 
-                JSObject ok = new JSObject();
-                ok.put("ok", true);
-                call.resolve(ok);
-            } catch (Exception e) {
-                closeActiveSocket();
-                call.reject("Gagal cetak ke printer: " + e.getMessage());
+                    JSObject ok = new JSObject();
+                    ok.put("ok", true);
+                    call.resolve(ok);
+                    return;
+                } catch (Exception e) {
+                    lastErr = e;
+                    closeActiveSocket();
+                    if (attempt < 3) {
+                        try {
+                            Thread.sleep(400);
+                        } catch (InterruptedException ignored) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
             }
+            call.reject("Gagal cetak ke printer: " + (lastErr != null ? lastErr.getMessage() : "Printer sedang dipakai atau mati"));
         });
     }
 

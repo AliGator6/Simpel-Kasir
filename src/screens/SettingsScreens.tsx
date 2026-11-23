@@ -308,7 +308,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
         <TopBar title="Pengaturan" mode="menu" onLeftClick={onOpenDrawer} />
         <div className="mx-auto w-full max-w-4xl px-4 py-4">
           <p className="text-center text-xs font-medium text-slate-500 dark:text-slate-400">
-            SimpelKasir Â· v{data.version}
+            SimpelKasir · v{data.version}
           </p>
 
           <div className="mt-5 grid grid-cols-3 gap-y-6 gap-x-3">
@@ -869,7 +869,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
 
             {scanningPrinter && (
               <p className="mt-2.5 text-xs font-medium text-[#165B49] dark:text-[#4BB89A]">
-                Sedang memindai perangkat Bluetooth di sekitar (Â±4 detik)...
+                Sedang memindai perangkat Bluetooth di sekitar (±4 detik)...
               </p>
             )}
 
