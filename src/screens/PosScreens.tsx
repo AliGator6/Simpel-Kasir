@@ -88,7 +88,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [visibleLimit, setVisibleLimit] = useState(100);
   const [showDensityModal, setShowDensityModal] = useState(false);
   const [qtyPopupProduct, setQtyPopupProduct] = useState<Product | null>(null);
-  const [qtyInputVal, setQtyInputVal] = useState(1);
+  const [qtyInputVal, setQtyInputVal] = useState(0);
   const [priceInputVal, setPriceInputVal] = useState(0);
   const [showBarcodeModal, setShowBarcodeModal] = useState(false);
   const [barcodeText, setBarcodeText] = useState('');
@@ -153,30 +153,19 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const restoreSearchFocusRef = useRef(false);
 
-  const isSearchInputVisible = () => {
-    const el = searchInputRef.current;
-    if (!el) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.top >= 40 && rect.bottom <= window.innerHeight;
-  };
-
   const refocusSearchIfNeeded = (shouldKeep: boolean, prevScrollY: number) => {
     restoreSearchFocusRef.current = false;
     const el = searchInputRef.current;
-    if (shouldKeep && el && isSearchInputVisible()) {
+    if (shouldKeep && el) {
       el.focus({ preventScroll: true });
       requestAnimationFrame(() => {
-        if (isSearchInputVisible()) {
-          el.focus({ preventScroll: true });
-        }
+        el.focus({ preventScroll: true });
         if (Math.abs(window.scrollY - prevScrollY) > 12) {
           window.scrollTo(0, prevScrollY);
         }
       });
       window.setTimeout(() => {
-        if (isSearchInputVisible()) {
-          el.focus({ preventScroll: true });
-        }
+        el.focus({ preventScroll: true });
         if (Math.abs(window.scrollY - prevScrollY) > 12) {
           window.scrollTo(0, prevScrollY);
         }
@@ -184,10 +173,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
       return;
     }
 
-    // If user already scrolled down past the search bar, never steal scroll back to the top
-    if (el && document.activeElement === el && !isSearchInputVisible()) {
-      el.blur();
-    }
     requestAnimationFrame(() => {
       if (Math.abs(window.scrollY - prevScrollY) > 12) {
         window.scrollTo(0, prevScrollY);
@@ -198,8 +183,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const keepKeyboardHandlers = {
     tabIndex: -1 as const,
     onPointerDown: () => {
-      restoreSearchFocusRef.current =
-        document.activeElement === searchInputRef.current && isSearchInputVisible();
+      restoreSearchFocusRef.current = document.activeElement === searchInputRef.current;
     },
     onMouseDown: (e: React.MouseEvent) => {
       // Prevent clicked action button from taking DOM focus (avoids WebView scroll jump when button unmounts)
@@ -220,8 +204,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const adjustProductQty = (product: Product, delta: number) => {
     const prevScrollY = window.scrollY;
     const shouldKeepKeyboard =
-      isSearchInputVisible() &&
-      (restoreSearchFocusRef.current || document.activeElement === searchInputRef.current);
+      restoreSearchFocusRef.current || document.activeElement === searchInputRef.current;
     setDraft((prev) => {
       const existing = prev.items.find((it) => it.productId === product.id);
       if (!existing && delta > 0) {
@@ -290,6 +273,23 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         ),
       };
     });
+  };
+
+  const applyQtyPopupAndFocusSearch = (e?: React.SyntheticEvent) => {
+    e?.preventDefault();
+    if (!qtyPopupProduct) return;
+    const prevScrollY = window.scrollY;
+    const targetProduct = qtyPopupProduct;
+    const q = Math.max(0, qtyInputVal);
+    const p = targetProduct.priceEditable ? Math.max(0, priceInputVal) : undefined;
+    flushSync(() => {
+      setExactProductQty(targetProduct, q, p);
+      setQtyPopupProduct(null);
+      if (!showSearchBox) {
+        setShowSearchBox(true);
+      }
+    });
+    refocusSearchIfNeeded(true, prevScrollY);
   };
 
   const sortedProducts = useMemo(() => {
@@ -542,7 +542,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           };
 
     return (
-      <div className="flex min-h-screen flex-col overflow-x-hidden bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
+      <div className="flex min-h-screen flex-col overflow-x-clip bg-[#F5F6F4] dark:bg-[#0E1418] pb-24">
         <TopBar
           title="Transaksi Baru"
           mode="menu"
@@ -658,9 +658,12 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               <Search className="h-5 w-5" />
             </button>
           </div>
+        </div>
 
-          {showSearchBox && (
-            <div className="mt-2.5 flex items-center rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-[#F8F9F7] dark:bg-[#0E1418] px-3 h-11 focus-within:border-[#165B49] transition-colors">
+        {/* Sticky Search Box pinned right below TopBar so keyboard stays open even when scrolled down */}
+        {showSearchBox && (
+          <div className="sticky top-14 z-20 mx-auto w-full max-w-4xl bg-white/95 dark:bg-[#151E24]/95 backdrop-blur-xs px-3 py-2 border-b border-[#E5E8E4] dark:border-[#223039]">
+            <div className="flex items-center rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-[#F8F9F7] dark:bg-[#0E1418] px-3 h-11 focus-within:border-[#165B49] transition-colors">
               <Search className="h-4 w-4 text-[#165B49] dark:text-[#4BB89A] shrink-0" />
               <input
                 ref={searchInputRef}
@@ -679,8 +682,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                   onClick={() => {
                     const prevScrollY = window.scrollY;
                     const shouldKeep =
-                      isSearchInputVisible() &&
-                      (restoreSearchFocusRef.current || document.activeElement === searchInputRef.current);
+                      restoreSearchFocusRef.current || document.activeElement === searchInputRef.current;
                     setSearchQuery('');
                     refocusSearchIfNeeded(shouldKeep, prevScrollY);
                   }}
@@ -690,8 +692,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 </button>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Product Rows */}
         <div className="mx-auto w-full max-w-4xl flex-1 divide-y divide-[#EAECE8] dark:divide-[#223039] bg-white dark:bg-[#151E24]">
@@ -740,7 +742,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     onClick={() => {
                       if (longPressTriggeredRef.current) return;
                       setQtyPopupProduct(product);
-                      setQtyInputVal(qty > 0 ? qty : 1);
+                      setQtyInputVal(qty > 0 ? qty : 0);
                       setPriceInputVal(product.sellPrice);
                     }}
                     className={`flex min-w-0 flex-1 flex-col justify-center ${densityStyle.leftPad} text-left select-none cursor-pointer active:bg-[#F5F7F5] dark:active:bg-[#1B262E] transition`}
@@ -761,13 +763,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     </p>
                   </div>
 
-                  {/* Right Action Area: High-Contrast + or [- | Emerald Qty] */}
+                  {/* Right Action Area: Soft-Contrast Visible + or [- | Emerald Qty] */}
                   {qty === 0 ? (
                     <button
                       type="button"
                       {...keepKeyboardHandlers}
                       onClick={() => adjustProductQty(product, 1)}
-                      className={`${densityStyle.plusBtnCls} flex shrink-0 items-center justify-center border-2 border-[#165B49]/75 bg-[#E3F3ED] text-[#0E4A3A] shadow-xs hover:bg-[#D3ECE2] active:scale-[0.97] transition dark:border-[#4BB89A]/80 dark:bg-[#143A30] dark:text-[#6EE7C7]`}
+                      className={`${densityStyle.plusBtnCls} flex shrink-0 items-center justify-center border border-[#165B49]/40 bg-[#EFF5F2] text-[#165B49]/90 shadow-xs hover:bg-[#E4EFEA] active:scale-[0.97] transition dark:border-[#4BB89A]/40 dark:bg-[#162B25] dark:text-[#66C7AC]`}
                       aria-label={`Tambah ${product.name}`}
                     >
                       <Plus className={densityStyle.plusIconCls} />
@@ -778,7 +780,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                         type="button"
                         {...keepKeyboardHandlers}
                         onClick={() => adjustProductQty(product, -1)}
-                        className={`flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} border-2 border-[#B54B54]/75 bg-[#FCEBEC] text-[#9E2B35] shadow-xs hover:bg-[#F7D7DA] active:scale-[0.97] transition dark:border-[#E07A82]/80 dark:bg-[#3B1B20] dark:text-[#FF9AA3]`}
+                        className={`flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} border border-[#B54B54]/40 bg-[#F7EFF0] text-[#A8434B] shadow-xs hover:bg-[#F2E3E5] active:scale-[0.97] transition dark:border-[#E07A82]/40 dark:bg-[#2A1B1E] dark:text-[#E28A92]`}
                         aria-label={`Kurangi ${product.name}`}
                       >
                         <Minus className={densityStyle.minusIconCls} />
@@ -847,7 +849,10 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         {/* Pop-up Ketik Jumlah Manual */}
         {qtyPopupProduct && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
-            <div className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl">
+            <form
+              onSubmit={applyQtyPopupAndFocusSearch}
+              className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl"
+            >
               <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white break-words [overflow-wrap:anywhere]">
                 {qtyPopupProduct.name}
               </h3>
@@ -866,8 +871,15 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 min={0}
                 allowDecimal
                 autoFocus
+                enterKeyHint="done"
+                placeholder="Ketik jumlah..."
                 value={qtyInputVal}
                 onValueChange={setQtyInputVal}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    applyQtyPopupAndFocusSearch(e);
+                  }
+                }}
                 className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-lg font-bold tabular-nums outline-none focus:border-[#165B49]"
               />
               {qtyPopupProduct.priceEditable && (
@@ -877,8 +889,14 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                   </label>
                   <NumericInput
                     min={0}
+                    enterKeyHint="done"
                     value={priceInputVal}
                     onValueChange={setPriceInputVal}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        applyQtyPopupAndFocusSearch(e);
+                      }
+                    }}
                     className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-base font-semibold tabular-nums outline-none focus:border-[#165B49]"
                   />
                 </>
@@ -892,21 +910,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                   Batal
                 </button>
                 <button
-                  type="button"
-                  onClick={() => {
-                    const q = Math.max(0, qtyInputVal);
-                    const p = qtyPopupProduct.priceEditable
-                      ? Math.max(0, priceInputVal)
-                      : undefined;
-                    setExactProductQty(qtyPopupProduct, q, p);
-                    setQtyPopupProduct(null);
-                  }}
+                  type="submit"
                   className="btn-lux-primary flex-1 rounded-xl py-2.5 text-sm font-semibold"
                 >
                   Terapkan
                 </button>
               </div>
-            </div>
+            </form>
           </div>
         )}
 
