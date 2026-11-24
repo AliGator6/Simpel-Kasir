@@ -1,9 +1,11 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   ArrowDownAZ,
   Settings,
   UserPlus,
   ScanBarcode,
+  PackagePlus,
   Bike,
   ShoppingBasket,
   Search,
@@ -33,6 +35,7 @@ import {
   AppData,
   CartItem,
   Customer,
+  PosFontScale,
   PosRowDensity,
   Product,
   ProgressStatus,
@@ -55,7 +58,7 @@ interface PosFlowProps {
   lastTransaction: Transaction | null;
   onOpenDrawer: () => void;
   onNavigate: (s: ScreenId) => void;
-  onEditProductFromPos: (product: Product) => void;
+  onEditProductFromPos: (product: Product | null) => void;
   onSaveQuickCart: (name: string) => void;
   onCompleteTransaction: (paidAmount: number, paymentMethod: 'tunai' | 'non_tunai', isPayLater: boolean) => Transaction;
   onUpdateData: (updater: (prev: AppData) => AppData) => void;
@@ -144,35 +147,63 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   }
   prevScreenRef.current = screen;
 
-  // Long press timer ref for product rows + Search keyboard focus preservation
+  // Long press timer ref for product rows + Search keyboard focus preservation without scroll jump
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const restoreSearchFocusRef = useRef(false);
 
-  const refocusSearchIfNeeded = (shouldKeep: boolean) => {
-    restoreSearchFocusRef.current = false;
-    if (!shouldKeep) return;
+  const isSearchInputVisible = () => {
     const el = searchInputRef.current;
-    if (!el) return;
-    el.focus({ preventScroll: true });
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.top >= 40 && rect.bottom <= window.innerHeight;
+  };
+
+  const refocusSearchIfNeeded = (shouldKeep: boolean, prevScrollY: number) => {
+    restoreSearchFocusRef.current = false;
+    const el = searchInputRef.current;
+    if (shouldKeep && el && isSearchInputVisible()) {
+      el.focus({ preventScroll: true });
+      requestAnimationFrame(() => {
+        if (isSearchInputVisible()) {
+          el.focus({ preventScroll: true });
+        }
+        if (Math.abs(window.scrollY - prevScrollY) > 12) {
+          window.scrollTo(0, prevScrollY);
+        }
+      });
+      window.setTimeout(() => {
+        if (isSearchInputVisible()) {
+          el.focus({ preventScroll: true });
+        }
+        if (Math.abs(window.scrollY - prevScrollY) > 12) {
+          window.scrollTo(0, prevScrollY);
+        }
+      }, 25);
+      return;
+    }
+
+    // If user already scrolled down past the search bar, never steal scroll back to the top
+    if (el && document.activeElement === el && !isSearchInputVisible()) {
+      el.blur();
+    }
     requestAnimationFrame(() => {
-      el.focus({ preventScroll: true });
+      if (Math.abs(window.scrollY - prevScrollY) > 12) {
+        window.scrollTo(0, prevScrollY);
+      }
     });
-    window.setTimeout(() => {
-      el.focus({ preventScroll: true });
-    }, 25);
   };
 
   const keepKeyboardHandlers = {
     tabIndex: -1 as const,
     onPointerDown: () => {
-      restoreSearchFocusRef.current = document.activeElement === searchInputRef.current;
+      restoreSearchFocusRef.current =
+        document.activeElement === searchInputRef.current && isSearchInputVisible();
     },
     onMouseDown: (e: React.MouseEvent) => {
-      if (document.activeElement === searchInputRef.current || restoreSearchFocusRef.current) {
-        e.preventDefault();
-      }
+      // Prevent clicked action button from taking DOM focus (avoids WebView scroll jump when button unmounts)
+      e.preventDefault();
     },
   };
 
@@ -187,8 +218,10 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const getCartQty = (productId: string) => cartQtyMap.get(productId) || 0;
 
   const adjustProductQty = (product: Product, delta: number) => {
+    const prevScrollY = window.scrollY;
     const shouldKeepKeyboard =
-      restoreSearchFocusRef.current || document.activeElement === searchInputRef.current;
+      isSearchInputVisible() &&
+      (restoreSearchFocusRef.current || document.activeElement === searchInputRef.current);
     setDraft((prev) => {
       const existing = prev.items.find((it) => it.productId === product.id);
       if (!existing && delta > 0) {
@@ -221,7 +254,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         ),
       };
     });
-    refocusSearchIfNeeded(shouldKeepKeyboard);
+    refocusSearchIfNeeded(shouldKeepKeyboard, prevScrollY);
   };
 
   const setExactProductQty = (product: Product, qty: number, unitPrice?: number) => {
@@ -384,47 +417,128 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   // ==============================================================
   if (screen === 'pos') {
     const density: PosRowDensity = data.productSettings.posRowDensity ?? 'normal';
+    const fontScale: PosFontScale = data.productSettings.posFontScale ?? 'normal';
+    const showQuickAddProductBtn = data.businessFlags.showQuickAddProductInPos ?? true;
+
     const densityStyle =
       density === 'tight'
         ? {
-            rowMinH: 'min-h-[46px]',
+            rowMinH:
+              fontScale === 'xlarge'
+                ? 'min-h-[60px]'
+                : fontScale === 'large'
+                ? 'min-h-[54px]'
+                : 'min-h-[46px]',
             leftPad: 'px-3 py-1.5',
-            titleCls: 'text-[13.5px] leading-tight',
-            skuCls: 'mt-0 text-[11px] leading-tight',
-            priceCls: 'mt-0 text-xs leading-tight',
-            plusBtnCls: 'mr-2.5 my-1 h-9 w-14 rounded-xl',
-            plusIconCls: 'h-4 w-4 stroke-[2.4]',
-            qtyGroupCls: 'mr-2.5 my-1 h-9 w-28 gap-1',
+            titleCls:
+              fontScale === 'xlarge'
+                ? 'text-[18px] leading-snug font-bold text-black dark:text-white'
+                : fontScale === 'large'
+                ? 'text-[16px] leading-tight font-bold text-[#101B20] dark:text-white'
+                : 'text-[13.5px] leading-tight font-semibold text-[#17252B] dark:text-[#ECF1EF]',
+            skuCls:
+              fontScale === 'xlarge'
+                ? 'mt-0.5 text-[13.5px] leading-tight font-semibold text-slate-700 dark:text-slate-200'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[12.5px] leading-tight font-medium text-slate-600 dark:text-slate-300'
+                : 'mt-0 text-[11px] leading-tight font-medium text-slate-500 dark:text-slate-400',
+            priceCls:
+              fontScale === 'xlarge'
+                ? 'mt-0.5 text-[16px] leading-tight font-extrabold text-[#0F493A] dark:text-[#6EE7C7]'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[14px] leading-tight font-bold text-[#145342] dark:text-[#57C7A8]'
+                : 'mt-0 text-xs leading-tight font-semibold text-[#165B49] dark:text-[#4BB89A]',
+            stockCls:
+              fontScale === 'xlarge'
+                ? 'ml-2 text-[13px] font-semibold text-slate-700 dark:text-slate-300'
+                : fontScale === 'large'
+                ? 'ml-2 text-xs font-medium text-slate-600 dark:text-slate-300'
+                : 'ml-2 text-xs font-normal text-slate-400',
+            plusBtnCls: 'mr-2.5 my-1 h-9 w-16 rounded-xl',
+            plusIconCls: fontScale === 'xlarge' ? 'h-5 w-5 stroke-[3.2]' : 'h-[18px] w-[18px] stroke-[3]',
+            qtyGroupCls: 'mr-2.5 my-1 h-9 w-32 gap-1.5',
             qtyBtnRounded: 'rounded-xl',
-            minusIconCls: 'h-4 w-4 stroke-[2.5]',
-            qtyTextCls: 'text-sm',
+            minusIconCls: fontScale === 'xlarge' ? 'h-5 w-5 stroke-[3.2]' : 'h-[18px] w-[18px] stroke-[3]',
+            qtyTextCls: fontScale === 'xlarge' ? 'text-base' : fontScale === 'large' ? 'text-[15px]' : 'text-sm',
           }
         : density === 'compact'
         ? {
-            rowMinH: 'min-h-[60px]',
+            rowMinH:
+              fontScale === 'xlarge'
+                ? 'min-h-[74px]'
+                : fontScale === 'large'
+                ? 'min-h-[66px]'
+                : 'min-h-[60px]',
             leftPad: 'px-3.5 py-2',
-            titleCls: 'text-[14.5px] leading-snug',
-            skuCls: 'mt-0.5 text-[11.5px]',
-            priceCls: 'mt-0.5 text-[13px]',
-            plusBtnCls: 'mr-3 my-1.5 h-10 w-16 rounded-xl',
-            plusIconCls: 'h-4 w-4 stroke-[2.4]',
-            qtyGroupCls: 'mr-3 my-1.5 h-10 w-32 gap-1.5',
+            titleCls:
+              fontScale === 'xlarge'
+                ? 'text-[19.5px] leading-snug font-bold text-black dark:text-white'
+                : fontScale === 'large'
+                ? 'text-[17px] leading-snug font-bold text-[#101B20] dark:text-white'
+                : 'text-[14.5px] leading-snug font-semibold text-[#17252B] dark:text-[#ECF1EF]',
+            skuCls:
+              fontScale === 'xlarge'
+                ? 'mt-0.5 text-[14px] font-semibold text-slate-700 dark:text-slate-200'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[13px] font-medium text-slate-600 dark:text-slate-300'
+                : 'mt-0.5 text-[11.5px] font-medium text-slate-500 dark:text-slate-400',
+            priceCls:
+              fontScale === 'xlarge'
+                ? 'mt-0.5 text-[17px] font-extrabold text-[#0F493A] dark:text-[#6EE7C7]'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[15px] font-bold text-[#145342] dark:text-[#57C7A8]'
+                : 'mt-0.5 text-[13px] font-semibold text-[#165B49] dark:text-[#4BB89A]',
+            stockCls:
+              fontScale === 'xlarge'
+                ? 'ml-2 text-[13.5px] font-semibold text-slate-700 dark:text-slate-300'
+                : fontScale === 'large'
+                ? 'ml-2 text-xs font-medium text-slate-600 dark:text-slate-300'
+                : 'ml-2 text-xs font-normal text-slate-400',
+            plusBtnCls: 'mr-3 my-1.5 h-11 w-18 rounded-xl',
+            plusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[3.2]' : 'h-5 w-5 stroke-[3]',
+            qtyGroupCls: 'mr-3 my-1.5 h-11 w-34 gap-1.5',
             qtyBtnRounded: 'rounded-xl',
-            minusIconCls: 'h-4 w-4 stroke-[2.5]',
-            qtyTextCls: 'text-base',
+            minusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[3.2]' : 'h-5 w-5 stroke-[3]',
+            qtyTextCls: fontScale === 'xlarge' ? 'text-lg' : fontScale === 'large' ? 'text-[17px]' : 'text-base',
           }
         : {
-            rowMinH: 'min-h-[78px]',
+            rowMinH:
+              fontScale === 'xlarge'
+                ? 'min-h-[90px]'
+                : fontScale === 'large'
+                ? 'min-h-[84px]'
+                : 'min-h-[78px]',
             leftPad: 'px-4 py-3',
-            titleCls: 'text-[16px] leading-snug',
-            skuCls: 'mt-0.5 text-xs',
-            priceCls: 'mt-0.5 text-sm',
+            titleCls:
+              fontScale === 'xlarge'
+                ? 'text-[21px] leading-snug font-bold text-black dark:text-white'
+                : fontScale === 'large'
+                ? 'text-[18.5px] leading-snug font-bold text-[#101B20] dark:text-white'
+                : 'text-[16px] leading-snug font-semibold text-[#17252B] dark:text-[#ECF1EF]',
+            skuCls:
+              fontScale === 'xlarge'
+                ? 'mt-0.5 text-[14.5px] font-semibold text-slate-700 dark:text-slate-200'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[13.5px] font-medium text-slate-600 dark:text-slate-300'
+                : 'mt-0.5 text-xs font-medium text-slate-500 dark:text-slate-400',
+            priceCls:
+              fontScale === 'xlarge'
+                ? 'mt-1 text-[18px] font-extrabold text-[#0F493A] dark:text-[#6EE7C7]'
+                : fontScale === 'large'
+                ? 'mt-0.5 text-[16px] font-bold text-[#145342] dark:text-[#57C7A8]'
+                : 'mt-0.5 text-sm font-semibold text-[#165B49] dark:text-[#4BB89A]',
+            stockCls:
+              fontScale === 'xlarge'
+                ? 'ml-2 text-sm font-semibold text-slate-700 dark:text-slate-300'
+                : fontScale === 'large'
+                ? 'ml-2 text-[13px] font-medium text-slate-600 dark:text-slate-300'
+                : 'ml-2 text-xs font-normal text-slate-400',
             plusBtnCls: 'mr-3 my-2 h-12 w-20 rounded-2xl',
-            plusIconCls: 'h-5 w-5 stroke-[2.4]',
-            qtyGroupCls: 'mr-3 my-2 h-12 w-36 gap-1.5',
+            plusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[3.2]' : 'h-6 w-6 stroke-[3]',
+            qtyGroupCls: 'mr-3 my-2 h-12 w-36 gap-2',
             qtyBtnRounded: 'rounded-2xl',
-            minusIconCls: 'h-5 w-5 stroke-[2.5]',
-            qtyTextCls: 'text-lg',
+            minusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[3.2]' : 'h-6 w-6 stroke-[3]',
+            qtyTextCls: fontScale === 'xlarge' ? 'text-xl' : fontScale === 'large' ? 'text-[19px]' : 'text-lg',
           };
 
     return (
@@ -439,8 +553,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 type="button"
                 onClick={() => setShowDensityModal(true)}
                 className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition"
-                aria-label="Ukuran kerapatan item"
-                title="Kerapatan Baris Item"
+                aria-label="Ukuran huruf dan kerapatan item"
+                title="Ukuran Huruf & Kerapatan Item"
               >
                 <Rows3 className="h-5 w-5" />
               </button>
@@ -464,13 +578,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           }
         />
 
-        {/* 5-Button Top Action Bar (GriyoPos Layout Preserved) */}
+        {/* Top Action Bar */}
         <div className="mx-auto w-full max-w-4xl bg-white dark:bg-[#151E24] px-3 pt-3 pb-2.5 border-b border-[#E5E8E4] dark:border-[#223039]">
-          <div className="grid grid-cols-6 gap-2">
+          <div className={`grid ${showQuickAddProductBtn ? 'grid-cols-7 gap-1.5' : 'grid-cols-6 gap-2'}`}>
             <button
               type="button"
               onClick={() => setShowCustomerSelectModal(true)}
-              className="btn-lux-obsidian col-span-2 flex h-10 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold"
+              className="btn-lux-obsidian col-span-2 flex h-10 items-center justify-center gap-1.5 rounded-xl px-2 text-xs font-semibold"
               title="Pilih Pelanggan"
             >
               <UserPlus className="h-4 w-4 shrink-0" />
@@ -481,14 +595,27 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               onClick={() => setShowBarcodeModal(true)}
               className="btn-lux-obsidian flex h-10 items-center justify-center rounded-xl"
               aria-label="Scan Barcode"
+              title="Scan / Input Barcode"
             >
               <ScanBarcode className="h-5 w-5" />
             </button>
+            {showQuickAddProductBtn && (
+              <button
+                type="button"
+                onClick={() => onEditProductFromPos(null)}
+                className="btn-lux-primary flex h-10 items-center justify-center rounded-xl"
+                aria-label="Tambah Produk Baru"
+                title="Tambah Produk Baru"
+              >
+                <PackagePlus className="h-5 w-5" />
+              </button>
+            )}
             <button
               type="button"
               onClick={() => onNavigate('quick_tx')}
               className="btn-lux-obsidian flex h-10 items-center justify-center rounded-xl"
               aria-label="Transaksi Cepat"
+              title="Transaksi Cepat"
             >
               <Bike className="h-5 w-5" />
             </button>
@@ -499,14 +626,34 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 filterInCartOnly ? 'btn-lux-primary' : 'btn-lux-gold'
               }`}
               aria-label="Filter item di keranjang"
+              title="Item Dipilih"
             >
               <ShoppingBasket className="h-5 w-5" />
             </button>
             <button
               type="button"
-              onClick={() => setShowSearchBox((s) => !s)}
-              className="btn-lux-obsidian flex h-10 items-center justify-center rounded-xl"
+              onClick={() => {
+                if (!showSearchBox) {
+                  flushSync(() => {
+                    setShowSearchBox(true);
+                  });
+                  searchInputRef.current?.focus();
+                  return;
+                }
+                const el = searchInputRef.current;
+                if (el && document.activeElement !== el) {
+                  el.focus();
+                } else if (!searchQuery) {
+                  setShowSearchBox(false);
+                } else {
+                  el?.focus();
+                }
+              }}
+              className={`flex h-10 items-center justify-center rounded-xl ${
+                showSearchBox ? 'btn-lux-primary' : 'btn-lux-obsidian'
+              }`}
               aria-label="Cari Produk"
+              title="Cari Produk"
             >
               <Search className="h-5 w-5" />
             </button>
@@ -521,17 +668,21 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Cari nama produk, SKU, atau barcode..."
-                className="w-full bg-transparent px-2.5 text-sm outline-none placeholder:text-slate-400"
+                className={`w-full bg-transparent px-2.5 outline-none placeholder:text-slate-400 ${
+                  fontScale === 'xlarge' ? 'text-base font-medium' : fontScale === 'large' ? 'text-[15px]' : 'text-sm'
+                }`}
               />
               {searchQuery && (
                 <button
                   type="button"
                   {...keepKeyboardHandlers}
                   onClick={() => {
+                    const prevScrollY = window.scrollY;
                     const shouldKeep =
-                      restoreSearchFocusRef.current || document.activeElement === searchInputRef.current;
+                      isSearchInputVisible() &&
+                      (restoreSearchFocusRef.current || document.activeElement === searchInputRef.current);
                     setSearchQuery('');
-                    refocusSearchIfNeeded(shouldKeep);
+                    refocusSearchIfNeeded(shouldKeep, prevScrollY);
                   }}
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-200/70 dark:hover:bg-slate-800"
                 >
@@ -549,10 +700,10 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               <p className="text-sm font-medium text-slate-500">Tidak ada produk yang cocok.</p>
               <button
                 type="button"
-                onClick={() => onNavigate('products')}
+                onClick={() => onEditProductFromPos(null)}
                 className="btn-lux-primary mt-3 rounded-xl px-4 py-2 text-xs font-semibold"
               >
-                Kelola Produk
+                + Tambah Produk Baru
               </button>
             </div>
           ) : (
@@ -578,7 +729,6 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                   {/* Left area: Short tap = qty popup, Long press = Edit Product */}
                   <div
                     role="button"
-                    tabIndex={0}
                     onPointerDown={startPress}
                     onPointerUp={cancelPress}
                     onPointerLeave={cancelPress}
@@ -595,29 +745,29 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     }}
                     className={`flex min-w-0 flex-1 flex-col justify-center ${densityStyle.leftPad} text-left select-none cursor-pointer active:bg-[#F5F7F5] dark:active:bg-[#1B262E] transition`}
                   >
-                    <p className={`font-display ${densityStyle.titleCls} font-semibold whitespace-normal break-words [overflow-wrap:anywhere] text-[#17252B] dark:text-[#ECF1EF]`}>
+                    <p className={`font-display ${densityStyle.titleCls} whitespace-normal break-words [overflow-wrap:anywhere]`}>
                       {product.name}
                     </p>
                     {data.productSettings.useSku && product.sku && (
-                      <p className={`${densityStyle.skuCls} font-medium whitespace-normal break-words [overflow-wrap:anywhere] text-slate-500 dark:text-slate-400`}>
+                      <p className={`${densityStyle.skuCls} whitespace-normal break-words [overflow-wrap:anywhere]`}>
                         {product.sku}
                       </p>
                     )}
-                    <p className={`${densityStyle.priceCls} font-semibold tabular-nums text-[#165B49] dark:text-[#4BB89A]`}>
+                    <p className={`${densityStyle.priceCls} tabular-nums`}>
                       {formatMoney(product.sellPrice, data.currencySymbol)}
                       {data.businessFlags.useStock && (
-                        <span className="ml-2 text-xs font-normal text-slate-400">· Stok: {product.stock}</span>
+                        <span className={densityStyle.stockCls}>· Stok: {product.stock}</span>
                       )}
                     </p>
                   </div>
 
-                  {/* Right Action Area: Tactile Keycap + or [- | Emerald Qty] */}
+                  {/* Right Action Area: High-Contrast + or [- | Emerald Qty] */}
                   {qty === 0 ? (
                     <button
                       type="button"
                       {...keepKeyboardHandlers}
                       onClick={() => adjustProductQty(product, 1)}
-                      className={`btn-lux-soft ${densityStyle.plusBtnCls} flex shrink-0 items-center justify-center text-[#165B49] dark:text-[#4BB89A]`}
+                      className={`${densityStyle.plusBtnCls} flex shrink-0 items-center justify-center border-2 border-[#165B49]/75 bg-[#E3F3ED] text-[#0E4A3A] shadow-xs hover:bg-[#D3ECE2] active:scale-[0.97] transition dark:border-[#4BB89A]/80 dark:bg-[#143A30] dark:text-[#6EE7C7]`}
                       aria-label={`Tambah ${product.name}`}
                     >
                       <Plus className={densityStyle.plusIconCls} />
@@ -628,7 +778,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                         type="button"
                         {...keepKeyboardHandlers}
                         onClick={() => adjustProductQty(product, -1)}
-                        className={`btn-lux-soft flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} text-[#B54B54] dark:text-[#E07A82]`}
+                        className={`flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} border-2 border-[#B54B54]/75 bg-[#FCEBEC] text-[#9E2B35] shadow-xs hover:bg-[#F7D7DA] active:scale-[0.97] transition dark:border-[#E07A82]/80 dark:bg-[#3B1B20] dark:text-[#FF9AA3]`}
                         aria-label={`Kurangi ${product.name}`}
                       >
                         <Minus className={densityStyle.minusIconCls} />
@@ -680,10 +830,12 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             >
               <div className="flex items-center gap-3">
                 <ShoppingBasket className="h-5 w-5" />
-                <span className="font-display text-base font-bold tabular-nums">{totalItemsCount} item</span>
+                <span className={`font-display font-bold tabular-nums ${fontScale === 'xlarge' ? 'text-lg' : 'text-base'}`}>
+                  {draft.items.length} produk
+                </span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="font-display text-base font-bold tabular-nums">
+                <span className={`font-display font-bold tabular-nums ${fontScale === 'xlarge' ? 'text-lg' : 'text-base'}`}>
                   {formatMoney(grandTotal, data.currencySymbol)}
                 </span>
                 <ChevronRight className="h-5 w-5" />
@@ -795,23 +947,68 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           </div>
         )}
 
-        {/* Pop-up Pilih Kerapatan Baris Item */}
+        {/* Pop-up Pilih Ukuran Huruf & Kerapatan Baris Item */}
         {showDensityModal && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4"
             onClick={() => setShowDensityModal(false)}
           >
             <div
-              className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl"
+              className="surface-card animate-modal-in w-full max-w-xs max-h-[85vh] overflow-y-auto rounded-3xl p-5 shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white">
-                Kerapatan Baris Item
+                Tampilan Produk Transaksi
               </h3>
               <p className="mt-1 text-xs text-slate-500">
-                Atur ukuran baris produk di layar transaksi.
+                Sesuaikan ukuran huruf agar jelas dibaca dan kerapatan baris item.
               </p>
-              <div className="mt-3.5 space-y-2">
+
+              <p className="mt-4 text-xs font-bold uppercase tracking-wider text-[#165B49] dark:text-[#4BB89A]">
+                Ukuran Huruf
+              </p>
+              <div className="mt-2 space-y-2">
+                {(
+                  [
+                    { id: 'normal', label: 'Normal', desc: 'Ukuran bawaan aplikasi' },
+                    { id: 'large', label: 'Besar', desc: 'Huruf lebih besar & tegas' },
+                    { id: 'xlarge', label: 'Ekstra Besar (Jelas)', desc: 'Paling besar & kontras tinggi' },
+                  ] as const
+                ).map((opt) => {
+                  const active = fontScale === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        onUpdateData((prev) => ({
+                          ...prev,
+                          productSettings: { ...prev.productSettings, posFontScale: opt.id },
+                        }));
+                        notify(`Ukuran huruf: ${opt.label}`);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-2xl border px-3.5 py-2 text-left transition ${
+                        active
+                          ? 'border-[#165B49] bg-[#165B49]/10 dark:border-[#4BB89A] dark:bg-[#165B49]/25'
+                          : 'border-[#DCE1DC] dark:border-[#2A3944] hover:bg-slate-50 dark:hover:bg-[#1B262E]'
+                      }`}
+                    >
+                      <div>
+                        <p className="font-display text-sm font-bold text-[#17252B] dark:text-white">
+                          {opt.label}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400">{opt.desc}</p>
+                      </div>
+                      {active && <CheckCircle2 className="h-5 w-5 shrink-0 text-[#165B49] dark:text-[#4BB89A]" />}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="mt-4 text-xs font-bold uppercase tracking-wider text-[#165B49] dark:text-[#4BB89A]">
+                Kerapatan Baris Item
+              </p>
+              <div className="mt-2 space-y-2">
                 {(
                   [
                     { id: 'tight', label: 'Sangat Rapat', desc: 'Tampil ±10–12 item dalam 1 layar' },
@@ -829,10 +1026,9 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                           ...prev,
                           productSettings: { ...prev.productSettings, posRowDensity: opt.id },
                         }));
-                        setShowDensityModal(false);
-                        notify(`Tampilan item: ${opt.label}`);
+                        notify(`Kerapatan baris: ${opt.label}`);
                       }}
-                      className={`flex w-full items-center justify-between rounded-2xl border px-3.5 py-2.5 text-left transition ${
+                      className={`flex w-full items-center justify-between rounded-2xl border px-3.5 py-2 text-left transition ${
                         active
                           ? 'border-[#165B49] bg-[#165B49]/10 dark:border-[#4BB89A] dark:bg-[#165B49]/25'
                           : 'border-[#DCE1DC] dark:border-[#2A3944] hover:bg-slate-50 dark:hover:bg-[#1B262E]'
@@ -852,9 +1048,9 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               <button
                 type="button"
                 onClick={() => setShowDensityModal(false)}
-                className="btn-lux-soft mt-3.5 w-full rounded-xl py-2.5 text-sm font-semibold"
+                className="btn-lux-primary mt-4 w-full rounded-xl py-2.5 text-sm font-bold"
               >
-                Tutup
+                Selesai
               </button>
             </div>
           </div>

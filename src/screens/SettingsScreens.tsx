@@ -466,10 +466,10 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
 
     return (
       <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418]">
-        <TopBar title="Jenis Usaha Anda" mode="back" onLeftClick={onBack} />
+        <TopBar title="Pengaturan Transaksi" mode="back" onLeftClick={onBack} />
         <div className="mx-auto w-full max-w-4xl flex-1 bg-white dark:bg-[#151E24]">
           <h2 className="font-display border-b border-[#EAECE8] dark:border-[#223039] py-5 text-center text-xl font-bold">
-            Jenis Usaha Anda
+            Transaksi & Jenis Usaha
           </h2>
           <SwitchRow label="Gunakan stok" checked={bf.useStock} onChange={(v) => setBf({ useStock: v })} />
           <SwitchRow label="Gunakan bahan baku/komposisi" checked={bf.useIngredients} onChange={(v) => setBf({ useIngredients: v })} />
@@ -477,6 +477,12 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
           <SwitchRow label="Aktifkan pajak" checked={bf.useTax} onChange={(v) => setBf({ useTax: v })} />
           <SwitchRow label="Gunakan alur progres" checked={bf.useProgress} onChange={(v) => setBf({ useProgress: v })} />
           <SwitchRow label="Gunakan ongkos kirim" checked={bf.useShipping} onChange={(v) => setBf({ useShipping: v })} />
+          <SwitchRow
+            label="Tampilkan tambah produk saat transaksi"
+            sublabel="Menampilkan tombol tambah produk di sebelah kanan barcode pada layar Transaksi Baru"
+            checked={bf.showQuickAddProductInPos ?? true}
+            onChange={(v) => setBf({ showQuickAddProductInPos: v })}
+          />
           <p className="px-4 py-4 text-xs text-slate-500">
             Anda masih bisa mengubah opsi di atas kapan saja melalui menu Pengaturan.
           </p>

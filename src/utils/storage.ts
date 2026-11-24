@@ -34,6 +34,7 @@ export const DEFAULT_APP_DATA: AppData = {
     taxPercent: 11,
     useProgress: false,
     useShipping: false,
+    showQuickAddProductInPos: true,
   },
   productSettings: {
     useSku: true,
@@ -47,6 +48,7 @@ export const DEFAULT_APP_DATA: AppData = {
     strictSearch: false,
     autoNoteAltPrice: false,
     posRowDensity: 'normal',
+    posFontScale: 'normal',
   },
   receiptSettings: {
     paperWidth: '58',

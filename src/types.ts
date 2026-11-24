@@ -27,6 +27,7 @@ export type ScreenId =
 export type PaymentStatus = 'lunas' | 'kurang' | 'belum_dibayar';
 export type ProgressStatus = 'antri' | 'proses' | 'selesai' | 'diambil';
 export type PosRowDensity = 'tight' | 'compact' | 'normal';
+export type PosFontScale = 'normal' | 'large' | 'xlarge';
 
 export interface StoreInfo {
   name: string;
@@ -148,6 +149,7 @@ export interface BusinessFlags {
   taxPercent: number;
   useProgress: boolean;
   useShipping: boolean;
+  showQuickAddProductInPos?: boolean;
 }
 
 export interface ProductSettings {
@@ -162,6 +164,7 @@ export interface ProductSettings {
   strictSearch: boolean;
   autoNoteAltPrice: boolean;
   posRowDensity?: PosRowDensity;
+  posFontScale?: PosFontScale;
 }
 
 export interface ReceiptSettings {

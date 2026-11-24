@@ -128,7 +128,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
           >
             <div className="min-w-0">
               <p className="text-xs font-bold text-[#165B49] dark:text-[#57C7A8]">
-                Keranjang Aktif Tersimpan · {draftSummary.count} item
+                Keranjang Aktif Tersimpan · {draft.items.length} produk
               </p>
               <p className="text-xs tabular-nums text-slate-600 dark:text-slate-300 truncate">
                 {draft.customerName} · {formatMoney(draftSummary.total, data.currencySymbol)}
