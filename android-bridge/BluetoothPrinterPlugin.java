@@ -1322,20 +1322,6 @@ public class BluetoothPrinterPlugin extends Plugin {
         });
     }
 
-    private BluetoothSocket ensureConnectedSocket(BluetoothAdapter adapter, String address) throws Exception {
-        synchronized (socketLock) {
-            if (activeSocket != null && address.equals(activeAddress) && activeSocket.isConnected()) {
-                return activeSocket;
-            }
-            closeActiveSocketLocked();
-            BluetoothDevice device = adapter.getRemoteDevice(address);
-            BluetoothSocket s = connectWithFallback(adapter, device);
-            activeSocket = s;
-            activeAddress = address;
-            return s;
-        }
-    }
-
     private void closeActiveSocket() {
         synchronized (socketLock) {
             closeActiveSocketLocked();
