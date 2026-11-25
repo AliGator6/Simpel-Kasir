@@ -1352,19 +1352,19 @@ public class BluetoothPrinterPlugin extends Plugin {
         activeAddress = null;
     }
 
-    private int getPreferredConnectMode(String address) {
-        if (address == null || address.isEmpty()) return MODE_INSECURE_SPP;
+    private int getSavedConnectMode(String address) {
+        if (address == null || address.isEmpty()) return 0;
         Integer cached = preferredConnectModeMap.get(address);
         if (cached != null) return cached;
         try {
             SharedPreferences prefs = getContext().getSharedPreferences(PREFS_BT, Context.MODE_PRIVATE);
-            int saved = prefs.getInt("bt_mode_" + address, 0);
+            int saved = prefs.getInt("bt_mode_v2_" + address, 0);
             if (saved >= MODE_SECURE_SPP && saved <= MODE_REFLECTION_CH1) {
                 preferredConnectModeMap.put(address, saved);
                 return saved;
             }
         } catch (Exception ignored) {}
-        return MODE_INSECURE_SPP;
+        return 0;
     }
 
     private void savePreferredConnectMode(String address, int mode) {
@@ -1374,7 +1374,7 @@ public class BluetoothPrinterPlugin extends Plugin {
             getContext()
                 .getSharedPreferences(PREFS_BT, Context.MODE_PRIVATE)
                 .edit()
-                .putInt("bt_mode_" + address, mode)
+                .putInt("bt_mode_v2_" + address, mode)
                 .apply();
         } catch (Exception ignored) {}
     }
@@ -1390,13 +1390,13 @@ public class BluetoothPrinterPlugin extends Plugin {
     private BluetoothSocket tryOpenSocketByMode(BluetoothDevice device, int mode) throws Exception {
         BluetoothSocket socket = null;
         try {
-            if (mode == MODE_INSECURE_SPP) {
-                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
-            } else if (mode == MODE_SECURE_SPP) {
-                socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
-            } else {
+            if (mode == MODE_REFLECTION_CH1) {
                 Method m = device.getClass().getMethod("createRfcommSocket", int.class);
                 socket = (BluetoothSocket) m.invoke(device, 1);
+            } else if (mode == MODE_INSECURE_SPP) {
+                socket = device.createInsecureRfcommSocketToServiceRecord(SPP_UUID);
+            } else {
+                socket = device.createRfcommSocketToServiceRecord(SPP_UUID);
             }
             if (socket == null) {
                 throw new IOException("Gagal membuat socket RFCOMM mode " + mode);
@@ -1409,7 +1409,7 @@ public class BluetoothPrinterPlugin extends Plugin {
         }
     }
 
-    private BluetoothSocket connectWithFallback(BluetoothAdapter adapter, BluetoothDevice device) throws Exception {
+    private BluetoothSocket connectWithFallback(BluetoothAdapter adapter, BluetoothDevice device, int attempt) throws Exception {
         try {
             if (adapter.isDiscovering()) {
                 adapter.cancelDiscovery();
@@ -1424,24 +1424,30 @@ public class BluetoothPrinterPlugin extends Plugin {
         } catch (Exception ignored) {}
 
         String address = device.getAddress();
-        int preferred = getPreferredConnectMode(address);
-        int[] baseOrder = { MODE_INSECURE_SPP, MODE_SECURE_SPP, MODE_REFLECTION_CH1 };
-        int[] tryOrder = new int[3];
-        tryOrder[0] = preferred;
-        int idx = 1;
-        for (int m : baseOrder) {
-            if (m != preferred && idx < tryOrder.length) {
-                tryOrder[idx++] = m;
+        int savedMode = getSavedConnectMode(address);
+        // Prefer direct RFCOMM Channel 1 first: bypasses slow (~6s) Samsung SDP lookup while falling back cleanly if needed.
+        int[] tryOrder;
+        if (savedMode != 0) {
+            if (attempt > 1) {
+                // On busy retries (e.g. printer currently used by another phone), avoid multi-mode SDP stalls.
+                tryOrder = new int[] { savedMode };
+            } else if (savedMode == MODE_REFLECTION_CH1) {
+                tryOrder = new int[] { MODE_REFLECTION_CH1, MODE_INSECURE_SPP };
+            } else {
+                tryOrder = new int[] { savedMode, MODE_REFLECTION_CH1 };
             }
+        } else {
+            tryOrder = new int[] { MODE_REFLECTION_CH1, MODE_INSECURE_SPP, MODE_SECURE_SPP };
         }
 
         Exception lastError = null;
         for (int mode : tryOrder) {
+            long t0 = System.currentTimeMillis();
             try {
                 BluetoothSocket s = tryOpenSocketByMode(device, mode);
-                if (mode != preferred) {
-                    savePreferredConnectMode(address, mode);
-                } else if (!preferredConnectModeMap.containsKey(address)) {
+                long elapsed = System.currentTimeMillis() - t0;
+                // Only cache slow SDP modes if direct Channel 1 wasn't already working or skipped
+                if (savedMode == 0 || (mode != savedMode && elapsed <= 2500)) {
                     savePreferredConnectMode(address, mode);
                 }
                 return s;
@@ -1453,20 +1459,31 @@ public class BluetoothPrinterPlugin extends Plugin {
         throw (lastError != null) ? lastError : new IOException("Tidak dapat membuka koneksi RFCOMM ke printer.");
     }
 
-    private void writePayloadFast(BluetoothSocket socket, byte[] payload) throws Exception {
-        OutputStream os = socket.getOutputStream();
-        if (payload.length <= 1024) {
-            os.write(payload);
-            os.flush();
-            return;
+    private BluetoothSocket openFreshSocket(BluetoothAdapter adapter, String address, int attempt) throws Exception {
+        synchronized (socketLock) {
+            closeActiveSocketLocked();
+            BluetoothDevice device = adapter.getRemoteDevice(address);
+            BluetoothSocket s = connectWithFallback(adapter, device, attempt);
+            activeSocket = s;
+            activeAddress = address;
+            return s;
         }
-        int chunkSize = 1024;
+    }
+
+    private BluetoothSocket ensureConnectedSocket(BluetoothAdapter adapter, String address) throws Exception {
+        return openFreshSocket(adapter, address, 1);
+    }
+
+    private void writePayloadSafe(BluetoothSocket socket, byte[] payload) throws Exception {
+        OutputStream os = socket.getOutputStream();
+        // Send in compact 256-byte chunks with gentle pacing so small 2KB thermal printer buffers never overflow or freeze mid-receipt
+        int chunkSize = 256;
         for (int i = 0; i < payload.length; i += chunkSize) {
             int len = Math.min(chunkSize, payload.length - i);
             os.write(payload, i, len);
             os.flush();
             if (i + len < payload.length) {
-                Thread.sleep(5);
+                Thread.sleep(24);
             }
         }
     }
@@ -1479,13 +1496,23 @@ public class BluetoothPrinterPlugin extends Plugin {
                 return;
             }
             Exception lastErr = null;
-            for (int attempt = 1; attempt <= 3; attempt++) {
+            // Up to 5 polite attempts with progressive backoff so up to 5 phones sharing 1 printer queue smoothly without collision
+            int[] retryDelaysMs = { 500, 900, 1300, 1700 };
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                boolean writeStarted = false;
                 try {
-                    BluetoothSocket socket = ensureConnectedSocket(adapter, address);
-                    Thread.sleep(30);
-                    writePayloadFast(socket, payload);
-                    // Short drain wait so printer finishes receiving buffer before disconnecting
-                    Thread.sleep(120);
+                    BluetoothSocket socket = openFreshSocket(adapter, address, attempt);
+                    // Short RFCOMM link settle pause so dual-mode Bluetooth printer chips never miss initial ESC @ header
+                    Thread.sleep(70);
+                    writeStarted = true;
+                    writePayloadSafe(socket, payload);
+
+                    // Adaptive RFCOMM drain wait proportional to receipt length so socket.close() never cuts printing mid-receipt
+                    int drainMs = Math.min(4800, Math.max(950, 750 + payload.length));
+                    Thread.sleep(drainMs);
+                    try {
+                        socket.getOutputStream().flush();
+                    } catch (Exception ignored) {}
                     closeActiveSocket();
 
                     JSObject ok = new JSObject();
@@ -1495,9 +1522,13 @@ public class BluetoothPrinterPlugin extends Plugin {
                 } catch (Exception e) {
                     lastErr = e;
                     closeActiveSocket();
-                    if (attempt < 3) {
+                    if (writeStarted) {
+                        // Do not blindly duplicate a half-printed receipt if connection dropped mid-stream
+                        break;
+                    }
+                    if (attempt <= retryDelaysMs.length) {
                         try {
-                            Thread.sleep(400);
+                            Thread.sleep(retryDelaysMs[attempt - 1]);
                         } catch (InterruptedException ignored) {
                             Thread.currentThread().interrupt();
                             break;
@@ -1505,7 +1536,8 @@ public class BluetoothPrinterPlugin extends Plugin {
                     }
                 }
             }
-            call.reject("Gagal cetak ke printer: " + (lastErr != null ? lastErr.getMessage() : "Printer sedang dipakai atau mati"));
+            call.reject("Printer sedang sibuk dipakai HP lain atau belum menyala. Coba ketuk Cetak lagi. (" +
+                (lastErr != null ? lastErr.getMessage() : "Koneksi terputus") + ")");
         });
     }
 

@@ -67,6 +67,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [scanningPrinter, setScanningPrinter] = useState(false);
   const [connectingAddr, setConnectingAddr] = useState<string | null>(null);
+  const [testingPrint, setTestingPrint] = useState(false);
 
   const [storeForm, setStoreForm] = useState(data.store);
   const [newUserName, setNewUserName] = useState('');
@@ -839,6 +840,9 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
                 {pr.selectedPrinterAddress && (
                   <p className="text-[11px] font-mono-tabular text-slate-400">{pr.selectedPrinterAddress}</p>
                 )}
+                <p className="mt-1 text-[11px] text-slate-500 leading-snug">
+                  Mode Multi-HP: printer otomatis dilepas tuntas usai cetak agar banyak HP bisa bergantian tanpa bentrok.
+                </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {pr.selectedPrinterAddress && (
@@ -933,17 +937,22 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
           <div className="mx-auto max-w-4xl">
             <button
               type="button"
+              disabled={testingPrint}
               onClick={async () => {
+                if (testingPrint) return;
+                setTestingPrint(true);
                 try {
                   const res = await runTestPrint(pr, data.store.name);
-                  notify(res === 'native' ? 'Test Print dikirim ke printer!' : 'Dialog Test Print dibuka');
+                  notify(res === 'native' ? 'Test Print tercetak tuntas!' : 'Dialog Test Print dibuka');
                 } catch (e) {
                   notify((e as Error).message || 'Test Print gagal');
+                } finally {
+                  setTestingPrint(false);
                 }
               }}
-              className="btn-lux-primary font-display h-12 w-full rounded-2xl text-sm font-bold tracking-wider"
+              className="btn-lux-primary font-display h-12 w-full rounded-2xl text-sm font-bold tracking-wider disabled:opacity-60"
             >
-              TEST PRINT
+              {testingPrint ? 'MENCETAK...' : 'TEST PRINT'}
             </button>
           </div>
         </div>

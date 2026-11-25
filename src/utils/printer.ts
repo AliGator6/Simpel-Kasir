@@ -255,10 +255,15 @@ export async function testBluetoothPrinterConnection(address: string): Promise<b
 }
 
 function encodeAscii(str: string): number[] {
+  const clean = str.replace(/\r\n?/g, '\n');
   const out: number[] = [];
-  for (let i = 0; i < str.length; i++) {
-    const code = str.charCodeAt(i);
-    out.push(code < 128 ? code : 63);
+  for (let i = 0; i < clean.length; i++) {
+    const code = clean.charCodeAt(i);
+    if (code === 10 || (code >= 32 && code < 127)) {
+      out.push(code);
+    } else if (code >= 127) {
+      out.push(63);
+    }
   }
   return out;
 }
@@ -294,8 +299,11 @@ export function buildEscPosReceiptBytes(
   const ESC = 0x1b;
   const GS = 0x1d;
 
-  // Initialize printer
+  // Initialize printer & ensure normal crisp non-bold text (no double-strike / heavy ink bleed)
   b.push(ESC, 0x40);
+  b.push(GS, 0x21, 0x00);
+  b.push(ESC, 0x45, 0x00);
+  b.push(ESC, 0x47, 0x00);
 
   // Line spacing (ESC 3 n or ESC 2)
   const spacing = printerCfg.lineSpacing ?? 'compact';
@@ -311,11 +319,9 @@ export function buildEscPosReceiptBytes(
 
   // Align center header
   b.push(ESC, 0x61, 0x01);
-  b.push(ESC, 0x45, 0x01);
   if (receiptCfg.largeStoreName) b.push(GS, 0x21, 0x11);
   pushText(store.name);
   b.push(GS, 0x21, 0x00);
-  b.push(ESC, 0x45, 0x00);
   if (store.address) pushText(store.address);
   if (store.city) pushText(store.city);
   if (store.phone) pushText(store.phone);
@@ -340,9 +346,7 @@ export function buildEscPosReceiptBytes(
     const qtyStr = `${item.qty}${receiptCfg.showUnit === 'all' ? (receiptCfg.unitSpace ? ` ${item.unit}` : item.unit) : ''}x`;
     const sub = item.unitPrice * item.qty - item.discount;
 
-    b.push(ESC, 0x45, 0x01);
     pushText(`${prefix}${item.name}`);
-    b.push(ESC, 0x45, 0x00);
     pushText(padRow(`  ${qtyStr} ${formatNumber(item.unitPrice)}`, formatNumber(sub), cols));
     if (item.discount > 0) {
       pushText(padRow('  Diskon item', `-${formatNumber(item.discount)}`, cols));
@@ -358,9 +362,7 @@ export function buildEscPosReceiptBytes(
     if (tx.tax > 0) pushText(padRow('Pajak', money(tx.tax), cols));
     if (tx.shipping > 0) pushText(padRow('Ongkir', money(tx.shipping), cols));
 
-    b.push(ESC, 0x45, 0x01);
     pushText(padRow('Total', money(tx.total), cols));
-    b.push(ESC, 0x45, 0x00);
     if (tx.paidAmount > 0) {
       pushText(padRow(tx.paymentMethod === 'non_tunai' ? 'Non Tunai' : 'Tunai', money(tx.paidAmount), cols));
       if (tx.changeAmount >= 0) {
@@ -382,6 +384,11 @@ export function buildEscPosReceiptBytes(
     if (receiptCfg.centerFooter) b.push(ESC, 0x61, 0x01);
     pushText(store.footer);
   }
+
+  // Restore left align & normal formatting before bottom feed
+  b.push(ESC, 0x61, 0x00);
+  b.push(ESC, 0x45, 0x00);
+  b.push(GS, 0x21, 0x00);
 
   // Exact bottom margin in mm (every 5mm = 40 dots on 203 DPI thermal printers)
   const bottomMm = (printerCfg.bottomFeedMm ?? 5) + (printerCfg.cutFeedExtra ? 10 : 0);

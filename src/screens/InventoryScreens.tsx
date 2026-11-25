@@ -128,9 +128,12 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
   const [supPhone, setSupPhone] = useState('');
 
   const sortedIndexedProducts = useMemo(() => {
-    const collator = new Intl.Collator('id', { sensitivity: 'base' });
     return [...data.products]
-      .sort((a, b) => (sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)))
+      .sort((a, b) => {
+        if (a.name === b.name) return 0;
+        const cmp = a.name < b.name ? -1 : 1;
+        return sortAsc ? cmp : -cmp;
+      })
       .map((product) => ({
         product,
         nameLower: product.name.toLowerCase(),

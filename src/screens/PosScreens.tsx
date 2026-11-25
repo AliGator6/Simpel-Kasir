@@ -137,6 +137,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [paidInput, setPaidInput] = useState<number>(grandTotal);
   const [hasTappedQuickDenom, setHasTappedQuickDenom] = useState(false);
   const [isNonCash, setIsNonCash] = useState(false);
+  const [isSubmittingTx, setIsSubmittingTx] = useState(false);
+  const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
 
   // Sync paidInput when entering payment screen
   const prevScreenRef = useRef(screen);
@@ -144,6 +146,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
     setPaidInput(grandTotal);
     setHasTappedQuickDenom(false);
     setIsNonCash(false);
+    setIsSubmittingTx(false);
   }
   prevScreenRef.current = screen;
 
@@ -293,11 +296,12 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   };
 
   const sortedProducts = useMemo(() => {
-    const collator = new Intl.Collator('id', { sensitivity: 'base' });
     return [...data.products]
-      .sort((a, b) =>
-        sortAsc ? collator.compare(a.name, b.name) : collator.compare(b.name, a.name)
-      )
+      .sort((a, b) => {
+        if (a.name === b.name) return 0;
+        const cmp = a.name < b.name ? -1 : 1;
+        return sortAsc ? cmp : -cmp;
+      })
       .map((product) => ({
         product,
         nameLower: product.name.toLowerCase(),
@@ -454,12 +458,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 : fontScale === 'large'
                 ? 'ml-2 text-xs font-medium text-slate-600 dark:text-slate-300'
                 : 'ml-2 text-xs font-normal text-slate-400',
-            plusBtnCls: 'mr-2.5 my-1 h-9 w-16 rounded-xl',
-            plusIconCls: fontScale === 'xlarge' ? 'h-5 w-5 stroke-[3.2]' : 'h-[18px] w-[18px] stroke-[3]',
-            qtyGroupCls: 'mr-2.5 my-1 h-9 w-32 gap-1.5',
-            qtyBtnRounded: 'rounded-xl',
-            minusIconCls: fontScale === 'xlarge' ? 'h-5 w-5 stroke-[3.2]' : 'h-[18px] w-[18px] stroke-[3]',
-            qtyTextCls: fontScale === 'xlarge' ? 'text-base' : fontScale === 'large' ? 'text-[15px]' : 'text-sm',
+            plusBtnCls: 'my-1 mr-1.5 w-20 rounded-xl',
+            plusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[2.8]' : 'h-6 w-6 stroke-[2.6]',
+            qtyGroupCls: 'my-1 mr-1.5 gap-1.5',
+            minusBtnCls: 'w-11 rounded-xl',
+            qtyBtnCls: 'w-20 rounded-xl',
+            minusIconCls: fontScale === 'xlarge' ? 'h-5 w-5 stroke-[2.8]' : 'h-5 w-5 stroke-[2.6]',
+            qtyTextCls: fontScale === 'xlarge' ? 'text-lg' : fontScale === 'large' ? 'text-base' : 'text-[15px]',
           }
         : density === 'compact'
         ? {
@@ -494,12 +499,13 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 : fontScale === 'large'
                 ? 'ml-2 text-xs font-medium text-slate-600 dark:text-slate-300'
                 : 'ml-2 text-xs font-normal text-slate-400',
-            plusBtnCls: 'mr-3 my-1.5 h-11 w-18 rounded-xl',
-            plusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[3.2]' : 'h-5 w-5 stroke-[3]',
-            qtyGroupCls: 'mr-3 my-1.5 h-11 w-34 gap-1.5',
-            qtyBtnRounded: 'rounded-xl',
-            minusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[3.2]' : 'h-5 w-5 stroke-[3]',
-            qtyTextCls: fontScale === 'xlarge' ? 'text-lg' : fontScale === 'large' ? 'text-[17px]' : 'text-base',
+            plusBtnCls: 'my-1.5 mr-1.5 w-[88px] rounded-xl',
+            plusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[2.8]' : 'h-6 w-6 stroke-[2.6]',
+            qtyGroupCls: 'my-1.5 mr-1.5 gap-1.5',
+            minusBtnCls: 'w-12 rounded-xl',
+            qtyBtnCls: 'w-[88px] rounded-xl',
+            minusIconCls: fontScale === 'xlarge' ? 'h-6 w-6 stroke-[2.8]' : 'h-5 w-5 stroke-[2.6]',
+            qtyTextCls: fontScale === 'xlarge' ? 'text-xl' : fontScale === 'large' ? 'text-[17px]' : 'text-base',
           }
         : {
             rowMinH:
@@ -533,11 +539,12 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 : fontScale === 'large'
                 ? 'ml-2 text-[13px] font-medium text-slate-600 dark:text-slate-300'
                 : 'ml-2 text-xs font-normal text-slate-400',
-            plusBtnCls: 'mr-3 my-2 h-12 w-20 rounded-2xl',
-            plusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[3.2]' : 'h-6 w-6 stroke-[3]',
-            qtyGroupCls: 'mr-3 my-2 h-12 w-36 gap-2',
-            qtyBtnRounded: 'rounded-2xl',
-            minusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[3.2]' : 'h-6 w-6 stroke-[3]',
+            plusBtnCls: 'my-1.5 mr-1.5 w-24 rounded-2xl',
+            plusIconCls: fontScale === 'xlarge' ? 'h-8 w-8 stroke-[2.8]' : 'h-7 w-7 stroke-[2.6]',
+            qtyGroupCls: 'my-1.5 mr-1.5 gap-1.5',
+            minusBtnCls: 'w-[52px] rounded-2xl',
+            qtyBtnCls: 'w-24 rounded-2xl',
+            minusIconCls: fontScale === 'xlarge' ? 'h-7 w-7 stroke-[2.8]' : 'h-6 w-6 stroke-[2.6]',
             qtyTextCls: fontScale === 'xlarge' ? 'text-xl' : fontScale === 'large' ? 'text-[19px]' : 'text-lg',
           };
 
@@ -727,7 +734,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               };
 
               return (
-                <div key={product.id} className={`flex ${densityStyle.rowMinH} w-full min-w-0 items-center overflow-hidden`}>
+                <div key={product.id} className={`flex ${densityStyle.rowMinH} w-full min-w-0 items-stretch overflow-hidden`}>
                   {/* Left area: Short tap = qty popup, Long press = Edit Product */}
                   <div
                     role="button"
@@ -763,24 +770,24 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     </p>
                   </div>
 
-                  {/* Right Action Area: Soft-Contrast Visible + or [- | Emerald Qty] */}
+                  {/* Right Action Area: Rounded 4-sided bordered box near right edge (+ or [narrow - | wide Qty]) */}
                   {qty === 0 ? (
                     <button
                       type="button"
                       {...keepKeyboardHandlers}
                       onClick={() => adjustProductQty(product, 1)}
-                      className={`${densityStyle.plusBtnCls} flex shrink-0 items-center justify-center border border-[#165B49]/40 bg-[#EFF5F2] text-[#165B49]/90 shadow-xs hover:bg-[#E4EFEA] active:scale-[0.97] transition dark:border-[#4BB89A]/40 dark:bg-[#162B25] dark:text-[#66C7AC]`}
+                      className={`${densityStyle.plusBtnCls} flex self-stretch shrink-0 items-center justify-center border border-[#165B49]/40 bg-[#EFF5F2] text-[#165B49]/90 shadow-xs hover:bg-[#E2EFEA] active:scale-[0.97] transition dark:border-[#4BB89A]/40 dark:bg-[#162B25] dark:text-[#66C7AC]`}
                       aria-label={`Tambah ${product.name}`}
                     >
                       <Plus className={densityStyle.plusIconCls} />
                     </button>
                   ) : (
-                    <div className={`${densityStyle.qtyGroupCls} flex shrink-0 items-stretch`}>
+                    <div className={`${densityStyle.qtyGroupCls} flex self-stretch shrink-0 items-stretch`}>
                       <button
                         type="button"
                         {...keepKeyboardHandlers}
                         onClick={() => adjustProductQty(product, -1)}
-                        className={`flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} border border-[#B54B54]/40 bg-[#F7EFF0] text-[#A8434B] shadow-xs hover:bg-[#F2E3E5] active:scale-[0.97] transition dark:border-[#E07A82]/40 dark:bg-[#2A1B1E] dark:text-[#E28A92]`}
+                        className={`${densityStyle.minusBtnCls} flex shrink-0 items-center justify-center border border-[#B54B54]/40 bg-[#F7EFF0] text-[#A8434B] shadow-xs hover:bg-[#F1E0E2] active:scale-[0.97] transition dark:border-[#E07A82]/40 dark:bg-[#2A1B1E] dark:text-[#E28A92]`}
                         aria-label={`Kurangi ${product.name}`}
                       >
                         <Minus className={densityStyle.minusIconCls} />
@@ -789,7 +796,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                         type="button"
                         {...keepKeyboardHandlers}
                         onClick={() => adjustProductQty(product, 1)}
-                        className={`btn-lux-primary font-display flex flex-1 items-center justify-center ${densityStyle.qtyBtnRounded} ${densityStyle.qtyTextCls} font-bold tabular-nums`}
+                        className={`${densityStyle.qtyBtnCls} btn-lux-primary font-display flex shrink-0 items-center justify-center ${densityStyle.qtyTextCls} font-bold tabular-nums`}
                         aria-label={`Tambah lagi ${product.name}`}
                       >
                         {qty}
@@ -1066,7 +1073,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
           </div>
         )}
 
-        {/* Select Saved Customer Modal */}
+        {/* Select or Add Customer Modal */}
         {showCustomerSelectModal && (
           <CustomerSelectorModal
             customers={data.customers}
@@ -1077,6 +1084,35 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 customerId: cust ? cust.id : null,
                 customerName: cust ? cust.name : 'Umum',
               }));
+              setShowCustomerSelectModal(false);
+            }}
+            onAddCustomer={(name, phone, address) => {
+              const newCust: Customer = {
+                id: `cust-${Date.now()}`,
+                name,
+                phone,
+                address,
+                note: '',
+              };
+              onUpdateData((prev) => ({
+                ...prev,
+                customers: [newCust, ...prev.customers],
+              }));
+              setDraft((prev) => ({
+                ...prev,
+                customerId: newCust.id,
+                customerName: newCust.name,
+              }));
+              notify(`Pelanggan "${newCust.name}" ditambahkan & dipilih`);
+              setShowCustomerSelectModal(false);
+            }}
+            onSelectTempName={(name) => {
+              setDraft((prev) => ({
+                ...prev,
+                customerId: null,
+                customerName: name,
+              }));
+              notify(`Nama pembeli diset: ${name}`);
               setShowCustomerSelectModal(false);
             }}
           />
@@ -1142,13 +1178,17 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               type="button"
               onClick={() => setShowCustomerSelectModal(true)}
               className="btn-lux-soft flex h-10 w-12 items-center justify-center rounded-xl text-[#165B49] dark:text-[#4BB89A]"
-              title="Pilih pelanggan tersimpan"
+              title="Pilih atau tambah pelanggan"
             >
               <UserCheck className="h-5 w-5" />
             </button>
-            <span className="font-display ml-1 text-base font-semibold text-[#8C6A2E] dark:text-[#D5B26E] truncate">
+            <button
+              type="button"
+              onClick={() => setShowCustomerSelectModal(true)}
+              className="font-display ml-1 flex-1 text-left text-base font-semibold text-[#8C6A2E] dark:text-[#D5B26E] truncate"
+            >
               {draft.customerName}
-            </span>
+            </button>
           </div>
 
           {/* Cart Items */}
@@ -1300,8 +1340,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         {showTempCustomerModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
             <div className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl">
-              <h3 className="font-display text-base font-bold">Nama Pembeli Sementara</h3>
-              <p className="mt-1 text-xs text-slate-500">Hanya dicetak di struk ini tanpa masuk daftar pelanggan.</p>
+              <h3 className="font-display text-base font-bold">Nama Pembeli / Tambah Pelanggan</h3>
+              <p className="mt-1 text-xs text-slate-500">Pilih pakai sementara untuk struk ini saja atau simpan ke daftar pelanggan.</p>
               <input
                 type="text"
                 autoFocus
@@ -1310,8 +1350,8 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 placeholder="Nama pembeli..."
                 className="mt-3 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-sm outline-none focus:border-[#165B49]"
               />
-              <div className="mt-4 flex gap-2.5">
-                <button type="button" onClick={() => setShowTempCustomerModal(false)} className="btn-lux-soft flex-1 rounded-xl py-2.5 text-sm font-semibold">
+              <div className="mt-4 flex gap-2">
+                <button type="button" onClick={() => setShowTempCustomerModal(false)} className="btn-lux-soft rounded-xl px-3 py-2.5 text-xs font-semibold">
                   Batal
                 </button>
                 <button
@@ -1324,9 +1364,38 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                     }));
                     setShowTempCustomerModal(false);
                   }}
-                  className="btn-lux-gold flex-1 rounded-xl py-2.5 text-sm font-semibold"
+                  className="btn-lux-gold flex-1 rounded-xl py-2.5 text-xs font-bold"
                 >
-                  Pakai
+                  Sementara
+                </button>
+                <button
+                  type="button"
+                  disabled={!tempCustomerInput.trim()}
+                  onClick={() => {
+                    const clean = tempCustomerInput.trim();
+                    if (!clean) return;
+                    const newCust: Customer = {
+                      id: `cust-${Date.now()}`,
+                      name: clean,
+                      phone: '',
+                      address: '',
+                      note: '',
+                    };
+                    onUpdateData((prev) => ({
+                      ...prev,
+                      customers: [newCust, ...prev.customers],
+                    }));
+                    setDraft((p) => ({
+                      ...p,
+                      customerId: newCust.id,
+                      customerName: newCust.name,
+                    }));
+                    notify(`Pelanggan "${newCust.name}" ditambahkan & dipilih`);
+                    setShowTempCustomerModal(false);
+                  }}
+                  className="btn-lux-primary flex-1 rounded-xl py-2.5 text-xs font-bold disabled:opacity-50"
+                >
+                  Simpan
                 </button>
               </div>
             </div>
@@ -1343,6 +1412,35 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 customerId: cust ? cust.id : null,
                 customerName: cust ? cust.name : 'Umum',
               }));
+              setShowCustomerSelectModal(false);
+            }}
+            onAddCustomer={(name, phone, address) => {
+              const newCust: Customer = {
+                id: `cust-${Date.now()}`,
+                name,
+                phone,
+                address,
+                note: '',
+              };
+              onUpdateData((prev) => ({
+                ...prev,
+                customers: [newCust, ...prev.customers],
+              }));
+              setDraft((prev) => ({
+                ...prev,
+                customerId: newCust.id,
+                customerName: newCust.name,
+              }));
+              notify(`Pelanggan "${newCust.name}" ditambahkan & dipilih`);
+              setShowCustomerSelectModal(false);
+            }}
+            onSelectTempName={(name) => {
+              setDraft((prev) => ({
+                ...prev,
+                customerId: null,
+                customerName: name,
+              }));
+              notify(`Nama pembeli diset: ${name}`);
               setShowCustomerSelectModal(false);
             }}
           />
@@ -1558,23 +1656,32 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
     };
 
     const finishTx = async (payLater: boolean) => {
-      const tx = onCompleteTransaction(
-        payLater ? 0 : paidInput,
-        isNonCash ? 'non_tunai' : 'tunai',
-        payLater
-      );
-      if (data.printerSettings.autoPrintAfterTx && !payLater) {
-        try {
-          await printThermalTransaction(
-            tx,
-            data.store,
-            data.receiptSettings,
-            data.printerSettings,
-            data.currencySymbol
-          );
-        } catch (err) {
-          notify((err as Error).message || 'Printer belum tersambung');
+      if (isSubmittingTx) return;
+      setIsSubmittingTx(true);
+      try {
+        const tx = onCompleteTransaction(
+          payLater ? 0 : paidInput,
+          isNonCash ? 'non_tunai' : 'tunai',
+          payLater
+        );
+        if (data.printerSettings.autoPrintAfterTx && !payLater) {
+          setIsPrintingReceipt(true);
+          try {
+            await printThermalTransaction(
+              tx,
+              data.store,
+              data.receiptSettings,
+              data.printerSettings,
+              data.currencySymbol
+            );
+          } catch (err) {
+            notify((err as Error).message || 'Printer belum tersambung');
+          } finally {
+            setIsPrintingReceipt(false);
+          }
         }
+      } finally {
+        setIsSubmittingTx(false);
       }
     };
 
@@ -1672,16 +1779,18 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             <div className="grid grid-cols-5 gap-2.5">
               <button
                 type="button"
+                disabled={isSubmittingTx}
                 onClick={() => finishTx(false)}
-                className="btn-lux-primary font-display col-span-3 flex h-12 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-bold"
+                className="btn-lux-primary font-display col-span-3 flex h-12 items-center justify-center gap-2 rounded-2xl px-3 text-sm font-bold disabled:opacity-60"
               >
                 <CheckCircle2 className="h-5 w-5 shrink-0" />
-                <span>BAYAR SEKARANG</span>
+                <span>{isSubmittingTx ? 'MEMPROSES...' : 'BAYAR SEKARANG'}</span>
               </button>
               <button
                 type="button"
+                disabled={isSubmittingTx}
                 onClick={() => finishTx(true)}
-                className="btn-lux-soft font-display col-span-2 flex h-12 items-center justify-center rounded-2xl px-3 text-sm font-bold"
+                className="btn-lux-soft font-display col-span-2 flex h-12 items-center justify-center rounded-2xl px-3 text-sm font-bold disabled:opacity-60"
               >
                 BAYAR NANTI
               </button>
@@ -1907,7 +2016,10 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         </button>
         <button
           type="button"
+          disabled={isPrintingReceipt}
           onClick={async () => {
+            if (isPrintingReceipt) return;
+            setIsPrintingReceipt(true);
             try {
               const mode = await printThermalTransaction(
                 tx,
@@ -1916,15 +2028,17 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 data.printerSettings,
                 data.currencySymbol
               );
-              notify(mode === 'native' ? 'Struk dikirim ke printer Bluetooth' : 'Membuka dialog cetak');
+              notify(mode === 'native' ? 'Struk tercetak tuntas di printer' : 'Membuka dialog cetak');
             } catch (e) {
               notify((e as Error).message || 'Gagal mencetak struk');
+            } finally {
+              setIsPrintingReceipt(false);
             }
           }}
-          className="flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[#17252B] dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#1E2B33] active:scale-95 transition"
+          className="flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[#17252B] dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-[#1E2B33] active:scale-95 transition disabled:opacity-50"
         >
-          <Printer className="h-5 w-5" />
-          <span className="text-xs font-semibold">Cetak</span>
+          <Printer className={`h-5 w-5 ${isPrintingReceipt ? 'animate-pulse text-[#165B49]' : ''}`} />
+          <span className="text-xs font-semibold">{isPrintingReceipt ? 'Mencetak...' : 'Cetak'}</span>
         </button>
         <button
           type="button"
@@ -1960,36 +2074,239 @@ const CustomerSelectorModal: React.FC<{
   customers: Customer[];
   onClose: () => void;
   onSelect: (cust: Customer | null) => void;
-}> = ({ customers, onClose, onSelect }) => {
+  onAddCustomer: (name: string, phone: string, address: string) => void;
+  onSelectTempName: (name: string) => void;
+}> = ({ customers, onClose, onSelect, onAddCustomer, onSelectTempName }) => {
+  const [search, setSearch] = useState('');
+  const [mode, setMode] = useState<'list' | 'add' | 'temp'>('list');
+  const [newName, setNewName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [newAddress, setNewAddress] = useState('');
+  const [tempName, setTempName] = useState('');
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return customers;
+    return customers.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.phone.toLowerCase().includes(q) ||
+        c.address.toLowerCase().includes(q)
+    );
+  }, [customers, search]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
-      <div className="surface-card animate-modal-in w-full max-w-sm rounded-3xl p-5 shadow-2xl">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4"
+      onClick={onClose}
+    >
+      <div
+        className="surface-card animate-modal-in w-full max-w-sm rounded-3xl p-5 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between">
-          <h3 className="font-display text-base font-bold">Pilih Pelanggan</h3>
-          <button type="button" onClick={onClose} className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800">
+          <h3 className="font-display text-base font-bold">
+            {mode === 'add'
+              ? 'Tambah Pelanggan Baru'
+              : mode === 'temp'
+              ? 'Pembeli Sementara'
+              : 'Pilih / Tambah Pelanggan'}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="mt-3 max-h-72 overflow-y-auto divide-y divide-[#EAECE8] dark:divide-[#223039]">
-          <button
-            type="button"
-            onClick={() => onSelect(null)}
-            className="w-full py-3 text-left text-sm font-semibold text-[#8C6A2E] dark:text-[#D5B26E]"
+
+        {mode === 'list' && (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setNewName(search.trim());
+                  setMode('add');
+                }}
+                className="btn-lux-primary flex items-center justify-center gap-1.5 rounded-xl py-2.5 px-2 text-xs font-bold"
+              >
+                <UserPlus className="h-4 w-4 shrink-0" />
+                <span>Tambah Pelanggan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setTempName(search.trim());
+                  setMode('temp');
+                }}
+                className="btn-lux-gold flex items-center justify-center gap-1.5 rounded-xl py-2.5 px-2 text-xs font-bold"
+              >
+                <FileEdit className="h-4 w-4 shrink-0" />
+                <span>Nama Sementara</span>
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-[#F8F9F7] dark:bg-[#0E1418] px-3 h-10">
+              <Search className="h-4 w-4 text-slate-400 shrink-0" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Cari nama atau no. HP..."
+                className="w-full bg-transparent px-2 text-sm outline-none placeholder:text-slate-400"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="text-slate-400 hover:text-slate-600"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="mt-2.5 max-h-64 overflow-y-auto divide-y divide-[#EAECE8] dark:divide-[#223039]">
+              <button
+                type="button"
+                onClick={() => onSelect(null)}
+                className="w-full py-2.5 text-left text-sm font-semibold text-[#8C6A2E] dark:text-[#D5B26E]"
+              >
+                Umum (Default)
+              </button>
+              {filtered.length === 0 ? (
+                <p className="py-5 text-center text-xs text-slate-500">
+                  Belum ada pelanggan yang cocok. Ketuk "Tambah Pelanggan" di atas.
+                </p>
+              ) : (
+                filtered.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => onSelect(c)}
+                    className="w-full py-2.5 text-left hover:bg-[#F7F9F7] dark:hover:bg-[#1B262E] rounded-lg px-1"
+                  >
+                    <p className="text-sm font-semibold text-[#17252B] dark:text-white">{c.name}</p>
+                    {(c.phone || c.address) && (
+                      <p className="text-xs text-slate-500 truncate">
+                        {[c.phone, c.address].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        {mode === 'add' && (
+          <form
+            className="mt-3 space-y-2.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const clean = newName.trim();
+              if (!clean) return;
+              onAddCustomer(clean, newPhone.trim(), newAddress.trim());
+            }}
           >
-            Umum (Default)
-          </button>
-          {customers.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => onSelect(c)}
-              className="w-full py-2.5 text-left hover:bg-[#F7F9F7] dark:hover:bg-[#1B262E] rounded-lg px-1"
-            >
-              <p className="text-sm font-semibold text-[#17252B] dark:text-white">{c.name}</p>
-              {c.phone && <p className="text-xs text-slate-500">{c.phone}</p>}
-            </button>
-          ))}
-        </div>
+            <p className="text-xs text-slate-500">
+              Data pelanggan tersimpan permanen dan langsung dipilih untuk transaksi ini.
+            </p>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Nama Pelanggan *
+              </label>
+              <input
+                type="text"
+                autoFocus
+                required
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Contoh: Ibu Ani / Toko Maju"
+                className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-sm outline-none focus:border-[#165B49]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                No. HP / WhatsApp (opsional)
+              </label>
+              <input
+                type="tel"
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+                placeholder="08..."
+                className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-sm outline-none focus:border-[#165B49]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                Alamat (opsional)
+              </label>
+              <input
+                type="text"
+                value={newAddress}
+                onChange={(e) => setNewAddress(e.target.value)}
+                placeholder="Alamat singkat..."
+                className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-sm outline-none focus:border-[#165B49]"
+              />
+            </div>
+            <div className="pt-2 flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setMode('list')}
+                className="btn-lux-soft flex-1 rounded-xl py-2.5 text-sm font-semibold"
+              >
+                Kembali
+              </button>
+              <button
+                type="submit"
+                disabled={!newName.trim()}
+                className="btn-lux-primary flex-1 rounded-xl py-2.5 text-sm font-bold disabled:opacity-50"
+              >
+                Simpan & Pilih
+              </button>
+            </div>
+          </form>
+        )}
+
+        {mode === 'temp' && (
+          <form
+            className="mt-3 space-y-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              onSelectTempName(tempName.trim() || 'Umum');
+            }}
+          >
+            <p className="text-xs text-slate-500">
+              Hanya dicetak di struk transaksi ini tanpa disimpan ke daftar pelanggan.
+            </p>
+            <input
+              type="text"
+              autoFocus
+              value={tempName}
+              onChange={(e) => setTempName(e.target.value)}
+              placeholder="Ketik nama pembeli..."
+              className="w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-sm outline-none focus:border-[#165B49]"
+            />
+            <div className="flex gap-2.5">
+              <button
+                type="button"
+                onClick={() => setMode('list')}
+                className="btn-lux-soft flex-1 rounded-xl py-2.5 text-sm font-semibold"
+              >
+                Kembali
+              </button>
+              <button
+                type="submit"
+                className="btn-lux-gold flex-1 rounded-xl py-2.5 text-sm font-bold"
+              >
+                Pakai Nama
+              </button>
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
