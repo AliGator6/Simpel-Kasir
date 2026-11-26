@@ -20,11 +20,14 @@ import {
   UserPlus,
   Store,
   ShieldCheck,
+  KeyRound,
+  Smartphone,
 } from 'lucide-react';
 import { AppData, ScreenId } from '../types';
 import { TopBar, SwitchRow, useBackClose } from '../components/TopBar';
 import { NumericInput } from '../components/NumericInput';
 import { DEFAULT_APP_DATA } from '../utils/storage';
+import { LicenseEvaluation } from '../utils/license';
 import {
   PairedDevice,
   runTestPrint,
@@ -43,6 +46,10 @@ interface SettingsProps {
     | 'settings_store';
   data: AppData;
   isOwnerLoggedIn: boolean;
+  deviceId: string;
+  licenseEvaluation: LicenseEvaluation;
+  onOpenActivation: () => void;
+  onOpenVendorGenerator: () => void;
   onOpenOwnerAuth: () => void;
   onOpenDrawer: () => void;
   onBack: () => void;
@@ -55,6 +62,10 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   screen,
   data,
   isOwnerLoggedIn,
+  deviceId,
+  licenseEvaluation,
+  onOpenActivation,
+  onOpenVendorGenerator,
   onOpenOwnerAuth,
   onOpenDrawer,
   onBack,
@@ -75,6 +86,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   const [showTaxModal, setShowTaxModal] = useState(false);
   const [taxInput, setTaxInput] = useState(data.businessFlags.taxPercent);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [versionTapCount, setVersionTapCount] = useState(0);
 
   // Back button modal close hooks
   useBackClose(showCurrencyModal, () => setShowCurrencyModal(false));
@@ -200,11 +212,28 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
       <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418]">
         <TopBar title="Pengaturan" mode="menu" onLeftClick={onOpenDrawer} />
         <div className="mx-auto w-full max-w-4xl px-4 py-4">
-          <p className="text-center text-xs font-medium text-slate-500 dark:text-slate-400">
-            SimpelKasir · v{data.version}
-          </p>
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => {
+                const next = versionTapCount + 1;
+                if (next >= 7) {
+                  setVersionTapCount(0);
+                  onOpenVendorGenerator();
+                } else {
+                  setVersionTapCount(next);
+                  if (next >= 5) {
+                    notify(`${7 - next} ketukan lagi untuk Generator Lisensi`);
+                  }
+                }
+              }}
+              className="px-3 py-1 text-center text-xs font-medium text-slate-500 dark:text-slate-400 active:opacity-70"
+            >
+              SimpelKasir · v{data.version}
+            </button>
+          </div>
 
-          <div className="mt-5 grid grid-cols-3 gap-y-6 gap-x-3">
+          <div className="mt-4 grid grid-cols-3 gap-y-6 gap-x-3">
             {gridButtons.map((btn) => {
               const circleBg =
                 btn.tone === 'emerald'
@@ -242,6 +271,41 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
                 </button>
               );
             })}
+          </div>
+
+          {/* Status Lisensi & Aktivasi Perangkat */}
+          <div className="surface-card mt-7 rounded-2xl p-4 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#165B49]/12 text-[#165B49] dark:text-[#4BB89A]">
+                  <KeyRound className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-display text-sm font-bold text-[#17252B] dark:text-white">
+                    {licenseEvaluation.headline}
+                  </h3>
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    {licenseEvaluation.detail}
+                  </p>
+                  <p className="mt-1 flex items-center gap-1.5 font-mono text-xs font-bold text-[#165B49] dark:text-[#4BB89A] tabular-nums">
+                    <Smartphone className="h-3.5 w-3.5 shrink-0" />
+                    <span>ID: {deviceId}</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenActivation}
+              className="btn-lux-primary flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold"
+            >
+              <KeyRound className="h-4 w-4" />
+              <span>
+                {licenseEvaluation.status === 'licensed_permanent'
+                  ? 'Lihat Info Lisensi & ID Perangkat'
+                  : 'Masukkan Kode Aktivasi'}
+              </span>
+            </button>
           </div>
         </div>
 

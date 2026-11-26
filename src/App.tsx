@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Lock, LockOpen, LogOut, ShieldCheck, X } from 'lucide-react';
+import { AlertTriangle, Lock, LockOpen, LogOut, ShieldCheck, X } from 'lucide-react';
 import { ActiveOrderDraft, AppData, Product, SavedQuickCart, ScreenId, Transaction } from './types';
 import {
   EMPTY_DRAFT,
   clearActiveDraft,
+  formatDateShort,
   hashOwnerPasscode,
   loadActiveDraft,
   loadAppData,
@@ -18,6 +19,17 @@ import { InventoryScreens } from './screens/InventoryScreens';
 import { FinanceScreens } from './screens/FinanceScreens';
 import { SettingsScreens } from './screens/SettingsScreens';
 import { SyncScreen } from './screens/SyncScreen';
+import { ActivationGateScreen, VendorLicenseGeneratorModal } from './components/LicenseScreens';
+import {
+  LocalLicenseState,
+  evaluateLicense,
+  loadLocalLicenseState,
+  markDailyExpiryReminderShown,
+  saveLocalLicenseState,
+  shouldShowDailyExpiryReminder,
+  verifyActivationCode,
+} from './utils/license';
+import { fetchNativeLicenseInfo, persistNativeLicenseCode } from './utils/printer';
 
 declare global {
   interface Window {
@@ -93,6 +105,12 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [changingPin, setChangingPin] = useState(false);
 
+  const [licenseState, setLicenseState] = useState<LocalLicenseState>(() => loadLocalLicenseState());
+  const [nativeLicenseChecked, setNativeLicenseChecked] = useState(false);
+  const [showExpiryReminder, setShowExpiryReminder] = useState(false);
+  const [showActivationModal, setShowActivationModal] = useState(false);
+  const [showVendorGenerator, setShowVendorGenerator] = useState(false);
+
   const lastNavToHomeAtRef = useRef<number>(0);
   const homeExitTapAtRef = useRef<number>(0);
 
@@ -103,6 +121,47 @@ export default function App() {
     setAuthError('');
     setChangingPin(false);
   });
+  useBackClose(showActivationModal, () => setShowActivationModal(false));
+  useBackClose(showVendorGenerator, () => setShowVendorGenerator(false));
+  useBackClose(showExpiryReminder, () => setShowExpiryReminder(false));
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (
+      params.get('admin') === 'lisensi' ||
+      params.get('vendor') === '1' ||
+      window.location.hash === '#admin-lisensi'
+    ) {
+      setShowVendorGenerator(true);
+    }
+
+    let cancelled = false;
+    fetchNativeLicenseInfo()
+      .then((nativeInfo) => {
+        if (cancelled) return;
+        if (nativeInfo) {
+          setLicenseState((prev) => {
+            const deviceId = nativeInfo.deviceId || prev.deviceId;
+            const trialStartMs = Math.min(prev.trialStartMs, nativeInfo.trialStartMs);
+            let activationCode = prev.activationCode;
+            if (nativeInfo.activationCode && verifyActivationCode(nativeInfo.activationCode, deviceId).valid) {
+              activationCode = nativeInfo.activationCode;
+            } else if (prev.activationCode && verifyActivationCode(prev.activationCode, deviceId).valid) {
+              persistNativeLicenseCode(prev.activationCode);
+            }
+            const merged: LocalLicenseState = { deviceId, trialStartMs, activationCode };
+            saveLocalLicenseState(merged);
+            return merged;
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setNativeLicenseChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     saveAppData(data);
@@ -383,6 +442,77 @@ export default function App() {
     notify('Berhasil login sebagai Pemilik. Laba ditampilkan.');
   };
 
+  const licenseEval = evaluateLicense(licenseState);
+
+  useEffect(() => {
+    if (!nativeLicenseChecked) return;
+    if (shouldShowDailyExpiryReminder(licenseEval)) {
+      markDailyExpiryReminderShown();
+      setShowExpiryReminder(true);
+    } else if (!licenseEval.isUnlocked || licenseEval.status === 'licensed_permanent') {
+      setShowExpiryReminder(false);
+    }
+  }, [nativeLicenseChecked, licenseEval.isUnlocked, licenseEval.status, licenseEval.daysLeft]);
+
+  useEffect(() => {
+    if (!showExpiryReminder) return;
+    const timer = window.setTimeout(() => {
+      setShowExpiryReminder(false);
+    }, 7000);
+    return () => window.clearTimeout(timer);
+  }, [showExpiryReminder]);
+
+  const handleActivateSuccess = (normalizedCode: string) => {
+    const check = verifyActivationCode(normalizedCode, licenseState.deviceId);
+    if (!check.valid) {
+      notify(check.reason || 'Kode aktivasi tidak valid');
+      return;
+    }
+    const next: LocalLicenseState = {
+      ...licenseState,
+      activationCode: normalizedCode,
+    };
+    setLicenseState(next);
+    saveLocalLicenseState(next);
+    persistNativeLicenseCode(normalizedCode);
+    setShowActivationModal(false);
+    setShowExpiryReminder(false);
+    notify(
+      check.plan === 'permanen'
+        ? 'Lisensi Permanen SimpelKasir aktif!'
+        : 'Lisensi berjangka SimpelKasir berhasil diaktifkan!'
+    );
+  };
+
+  if (!licenseEval.isUnlocked) {
+    return (
+      <AppErrorBoundary>
+        <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
+          <ActivationGateScreen
+            mode="locked"
+            deviceId={licenseState.deviceId}
+            evaluation={licenseEval}
+            onActivateSuccess={handleActivateSuccess}
+            onOpenVendorGenerator={() => setShowVendorGenerator(true)}
+            notify={notify}
+          />
+          <VendorLicenseGeneratorModal
+            open={showVendorGenerator}
+            currentDeviceId={licenseState.deviceId}
+            onClose={() => setShowVendorGenerator(false)}
+            onApplyToCurrentDevice={handleActivateSuccess}
+            notify={notify}
+          />
+          {toastMsg && (
+            <div className="fixed bottom-8 left-1/2 z-50 w-max max-w-[90vw] -translate-x-1/2 rounded-2xl bg-[#132622]/95 px-4 py-2.5 text-center text-xs font-semibold text-white shadow-xl border border-white/15 backdrop-blur-md">
+              {toastMsg}
+            </div>
+          )}
+        </div>
+      </AppErrorBoundary>
+    );
+  }
+
   return (
     <AppErrorBoundary>
       <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
@@ -509,6 +639,10 @@ export default function App() {
           screen={screen}
           data={data}
           isOwnerLoggedIn={isOwnerLoggedIn}
+          deviceId={licenseState.deviceId}
+          licenseEvaluation={licenseEval}
+          onOpenActivation={() => setShowActivationModal(true)}
+          onOpenVendorGenerator={() => setShowVendorGenerator(true)}
           onOpenOwnerAuth={openOwnerAuthModal}
           onOpenDrawer={() => setDrawerOpen(true)}
           onBack={() =>
@@ -670,6 +804,76 @@ export default function App() {
                 </div>
               </form>
             )}
+          </div>
+        </div>
+      )}
+
+      {showActivationModal && (
+        <ActivationGateScreen
+          mode="modal"
+          deviceId={licenseState.deviceId}
+          evaluation={licenseEval}
+          onActivateSuccess={handleActivateSuccess}
+          onClose={() => setShowActivationModal(false)}
+          onOpenVendorGenerator={() => {
+            setShowActivationModal(false);
+            setShowVendorGenerator(true);
+          }}
+          notify={notify}
+        />
+      )}
+
+      <VendorLicenseGeneratorModal
+        open={showVendorGenerator}
+        currentDeviceId={licenseState.deviceId}
+        onClose={() => setShowVendorGenerator(false)}
+        onApplyToCurrentDevice={handleActivateSuccess}
+        notify={notify}
+      />
+
+      {/* Pop-up Pengingat Masa Aktif (Sekali Sehari, Mulai H-3 Sebelum Expired) */}
+      {showExpiryReminder && licenseEval.isUnlocked && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed top-16 left-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2"
+        >
+          <div className="surface-card animate-modal-in rounded-2xl border border-[#C69B4B]/45 bg-white/95 dark:bg-[#172128]/95 p-3.5 shadow-2xl backdrop-blur-md">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#C69B4B]/15 text-[#9A6F21] dark:text-[#DFAA56]">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="font-display text-xs font-bold text-[#17252B] dark:text-white">
+                  {licenseEval.status === 'trial'
+                    ? `Masa Uji Coba Tinggal ${licenseEval.daysLeft} Hari`
+                    : `Masa Aktif Tinggal ${licenseEval.daysLeft} Hari`}
+                </p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+                  Berakhir {licenseEval.expiresAtMs ? formatDateShort(licenseEval.expiresAtMs) : 'segera'}. Masukkan kode aktivasi agar aplikasi tetap bisa dipakai.
+                </p>
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowExpiryReminder(false);
+                      setShowActivationModal(true);
+                    }}
+                    className="btn-lux-primary inline-flex min-h-[36px] items-center justify-center rounded-xl px-3 py-1.5 text-[11px] font-bold"
+                  >
+                    Aktivasi Sekarang
+                  </button>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExpiryReminder(false)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-black/5 dark:text-slate-300 dark:hover:bg-white/10"
+                aria-label="Tutup pengingat"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -73,6 +73,12 @@ interface NativePrinterPlugin {
     saveToSimpelKasir?: boolean;
     fileName?: string;
   }): Promise<WifiDownloadResult>;
+  getDeviceLicenseInfo?(): Promise<{
+    deviceId: string;
+    trialStartMs: number;
+    activationCode: string;
+  }>;
+  saveNativeLicense?(options: { activationCode: string }): Promise<{ ok: boolean }>;
 }
 
 interface CapacitorBridgeWindow {
@@ -137,6 +143,14 @@ function getNativePrinter(): NativePrinterPlugin | null {
         np<{ servers: WifiDiscoveredPeer[] }>('BluetoothPrinter', 'discoverWifiCsvServers', {}),
       downloadWifiCsv: (options) =>
         np<WifiDownloadResult>('BluetoothPrinter', 'downloadWifiCsv', options),
+      getDeviceLicenseInfo: () =>
+        np<{ deviceId: string; trialStartMs: number; activationCode: string }>(
+          'BluetoothPrinter',
+          'getDeviceLicenseInfo',
+          {}
+        ),
+      saveNativeLicense: (options) =>
+        np<{ ok: boolean }>('BluetoothPrinter', 'saveNativeLicense', options),
     };
     return cachedNativePrinter;
   }
@@ -146,6 +160,38 @@ function getNativePrinter(): NativePrinterPlugin | null {
 
 export function isNativeAndroidPrinterAvailable(): boolean {
   return !!getNativePrinter();
+}
+
+export async function fetchNativeLicenseInfo(): Promise<{
+  deviceId: string;
+  trialStartMs: number;
+  activationCode: string;
+} | null> {
+  const native = getNativePrinter();
+  if (!native || typeof native.getDeviceLicenseInfo !== 'function') return null;
+  try {
+    const res = await native.getDeviceLicenseInfo();
+    if (res && typeof res.deviceId === 'string' && res.deviceId) {
+      return {
+        deviceId: res.deviceId,
+        trialStartMs: Number(res.trialStartMs) || Date.now(),
+        activationCode: typeof res.activationCode === 'string' ? res.activationCode : '',
+      };
+    }
+  } catch {
+    // Ignore when running on older APK without native license bridge
+  }
+  return null;
+}
+
+export async function persistNativeLicenseCode(activationCode: string): Promise<void> {
+  const native = getNativePrinter();
+  if (!native || typeof native.saveNativeLicense !== 'function') return;
+  try {
+    await native.saveNativeLicense({ activationCode });
+  } catch {
+    // Fallback remains saved in localStorage
+  }
 }
 
 export async function autoConnectBluetoothPrinter(address: string): Promise<boolean> {

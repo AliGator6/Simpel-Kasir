@@ -25,6 +25,7 @@ import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 
 import androidx.core.app.ActivityCompat;
@@ -62,6 +63,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -1614,6 +1616,83 @@ public class BluetoothPrinterPlugin extends Plugin {
             call.reject("Printer sedang sibuk dipakai HP lain atau belum menyala. Coba ketuk Cetak lagi. (" +
                 (lastErr != null ? lastErr.getMessage() : "Koneksi terputus") + ")");
         });
+    }
+
+    // =========================================================================
+    // OFFLINE DEVICE-LOCKED LICENSING (CARA 1 - TANPA SERVER)
+    // =========================================================================
+
+    private static final String LIC_PREFS_NAME = "simpelkasir_lic_prefs";
+    private static final String LIC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+    private String computeShortDeviceId(String rawSeed) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(("SK_DEV_V1::" + rawSeed).getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder("SK-");
+            for (int i = 0; i < 8; i++) {
+                int idx = (hash[i] & 0xFF) % LIC_ALPHABET.length();
+                sb.append(LIC_ALPHABET.charAt(idx));
+                if (i == 3) sb.append('-');
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            String clean = rawSeed.replaceAll("[^a-zA-Z0-9]", "").toUpperCase(Locale.ROOT);
+            while (clean.length() < 8) clean += "7";
+            return "SK-" + clean.substring(0, 4) + "-" + clean.substring(4, 8);
+        }
+    }
+
+    @PluginMethod
+    public void getDeviceLicenseInfo(PluginCall call) {
+        try {
+            SharedPreferences prefs = getContext().getSharedPreferences(LIC_PREFS_NAME, Context.MODE_PRIVATE);
+            String deviceId = prefs.getString("deviceId", "");
+            if (deviceId == null || deviceId.isEmpty()) {
+                String androidId = "";
+                try {
+                    androidId = Settings.Secure.getString(
+                        getContext().getContentResolver(),
+                        Settings.Secure.ANDROID_ID
+                    );
+                } catch (Exception ignored) {}
+                if (androidId == null || androidId.isEmpty() || "9774d56d682e549c".equalsIgnoreCase(androidId)) {
+                    androidId = UUID.randomUUID().toString();
+                }
+                deviceId = computeShortDeviceId(androidId);
+                prefs.edit().putString("deviceId", deviceId).apply();
+            }
+
+            long trialStartMs = prefs.getLong("trialStartMs", 0L);
+            if (trialStartMs <= 0L) {
+                trialStartMs = System.currentTimeMillis();
+                prefs.edit().putLong("trialStartMs", trialStartMs).apply();
+            }
+
+            String activationCode = prefs.getString("activationCode", "");
+
+            JSObject res = new JSObject();
+            res.put("deviceId", deviceId);
+            res.put("trialStartMs", trialStartMs);
+            res.put("activationCode", activationCode != null ? activationCode : "");
+            call.resolve(res);
+        } catch (Exception e) {
+            call.reject("Gagal membaca info lisensi perangkat: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void saveNativeLicense(PluginCall call) {
+        String activationCode = call.getString("activationCode", "");
+        try {
+            SharedPreferences prefs = getContext().getSharedPreferences(LIC_PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putString("activationCode", activationCode != null ? activationCode : "").apply();
+            JSObject ok = new JSObject();
+            ok.put("ok", true);
+            call.resolve(ok);
+        } catch (Exception e) {
+            call.reject("Gagal menyimpan lisensi perangkat: " + e.getMessage());
+        }
     }
 
     @Override
