@@ -44,6 +44,27 @@ jobs:
           mkdir -p android/app/src/main/java/com/tokocahaya/simpelkasir
           cp android-bridge/BluetoothPrinterPlugin.java android/app/src/main/java/com/tokocahaya/simpelkasir/
           cp android-bridge/MainActivity.java android/app/src/main/java/com/tokocahaya/simpelkasir/
+          for dpi in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p "android/app/src/main/res/mipmap-$dpi"
+            cp "android-bridge/icons/mipmap-$dpi/ic_launcher.png" "android/app/src/main/res/mipmap-$dpi/ic_launcher.png"
+            cp "android-bridge/icons/mipmap-$dpi/ic_launcher.png" "android/app/src/main/res/mipmap-$dpi/ic_launcher_round.png"
+            cp "android-bridge/icons/mipmap-$dpi/ic_launcher_foreground.png" "android/app/src/main/res/mipmap-$dpi/ic_launcher_foreground.png"
+          done
+          mkdir -p android/app/src/main/res/values android/app/src/main/res/mipmap-anydpi-v26
+          cat << 'EOF_ICON_BG' > android/app/src/main/res/values/ic_launcher_background.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#101C1A</color>
+          </resources>
+          EOF_ICON_BG
+          cat << 'EOF_ADAPTIVE' > android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF_ADAPTIVE
+          cp android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
           node -e '
             const fs = require("fs");
             const p = "android/app/src/main/AndroidManifest.xml";
