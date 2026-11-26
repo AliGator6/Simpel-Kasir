@@ -16,12 +16,14 @@ const VENDOR_PIN_SHA256 = 'c264ac0dbf7a114046106ca6831ab74bb2dfb8bc2ffe7e02611ec
 
 export const TRIAL_DAYS = 7;
 export const EXPIRY_REMINDER_DAYS = 3;
+const CLOCK_ROLLBACK_TOLERANCE_MS = 300_000; // 5 minutes tolerance for minor NTP adjustments
 
-export type LicensePlanOption = 'permanen' | '30d' | '90d' | '365d';
+export type LicensePlanOption = '7d' | '30d' | '90d' | '365d' | 'permanen';
 
 export interface LocalLicenseState {
   deviceId: string;
   trialStartMs: number;
+  maxSeenMs: number;
   activationCode: string;
 }
 
@@ -35,7 +37,7 @@ export interface LicenseVerificationResult {
 }
 
 export interface LicenseEvaluation {
-  status: 'licensed_permanent' | 'licensed_timed' | 'trial' | 'expired';
+  status: 'licensed_permanent' | 'licensed_timed' | 'trial' | 'unactivated' | 'expired' | 'clock_tampered';
   isUnlocked: boolean;
   daysLeft: number;
   expiresAtMs: number | null;
@@ -281,8 +283,15 @@ export function generateActivationCode(
 
   if (plan !== 'permanen') {
     planChar = 'D';
-    const addDays = plan === '30d' ? 30 : plan === '90d' ? 90 : 365;
-    planLabel = plan === '30d' ? 'Aktif 30 Hari' : plan === '90d' ? 'Aktif 90 Hari' : 'Aktif 1 Tahun (365 Hari)';
+    const addDays = plan === '7d' ? 7 : plan === '30d' ? 30 : plan === '90d' ? 90 : 365;
+    planLabel =
+      plan === '7d'
+        ? 'Uji Coba 7 Hari'
+        : plan === '30d'
+        ? 'Aktif 30 Hari'
+        : plan === '90d'
+        ? 'Aktif 90 Hari'
+        : 'Aktif 1 Tahun (365 Hari)';
     const todayDayIndex = Math.max(1, Math.floor((nowMs - EPOCH_2025_UTC_MS) / MS_PER_DAY));
     expiryDaysVal = Math.min(32767, todayDayIndex + addDays);
     expiresAtMs = EPOCH_2025_UTC_MS + expiryDaysVal * MS_PER_DAY + (MS_PER_DAY - 1);
@@ -411,19 +420,29 @@ export function verifyActivationCode(
 // =========================================================================
 
 export function loadLocalLicenseState(): LocalLicenseState {
+  const now = Date.now();
   try {
     const raw = localStorage.getItem(LICENSE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<LocalLicenseState>;
       if (parsed && typeof parsed.deviceId === 'string' && parsed.deviceId) {
+        const trialStartMs =
+          typeof parsed.trialStartMs === 'number' && parsed.trialStartMs > 0
+            ? parsed.trialStartMs
+            : now;
+        const prevMax =
+          typeof parsed.maxSeenMs === 'number' && parsed.maxSeenMs > 0
+            ? parsed.maxSeenMs
+            : trialStartMs;
         const state: LocalLicenseState = {
           deviceId: formatDeviceId(parsed.deviceId),
-          trialStartMs:
-            typeof parsed.trialStartMs === 'number' && parsed.trialStartMs > 0
-              ? parsed.trialStartMs
-              : Date.now(),
+          trialStartMs,
+          maxSeenMs: Math.max(now, prevMax, trialStartMs),
           activationCode: typeof parsed.activationCode === 'string' ? parsed.activationCode : '',
         };
+        if (state.maxSeenMs > prevMax) {
+          saveLocalLicenseState(state);
+        }
         return state;
       }
     }
@@ -433,7 +452,8 @@ export function loadLocalLicenseState(): LocalLicenseState {
 
   const initial: LocalLicenseState = {
     deviceId: generateWebFallbackDeviceId(),
-    trialStartMs: Date.now(),
+    trialStartMs: now,
+    maxSeenMs: now,
     activationCode: '',
   };
   saveLocalLicenseState(initial);
@@ -448,9 +468,33 @@ export function saveLocalLicenseState(state: LocalLicenseState): void {
   }
 }
 
-export function evaluateLicense(state: LocalLicenseState, nowMs = Date.now()): LicenseEvaluation {
+export function touchLicenseClock(
+  state: LocalLicenseState,
+  nowMs = Date.now()
+): { nextState: LocalLicenseState; rollbackDetected: boolean } {
+  const prevMax = state.maxSeenMs || state.trialStartMs || nowMs;
+  const rollbackDetected = prevMax > 0 && nowMs < prevMax - CLOCK_ROLLBACK_TOLERANCE_MS;
+  const nextMax = Math.max(nowMs, prevMax);
+  if (nextMax > state.maxSeenMs) {
+    const nextState: LocalLicenseState = { ...state, maxSeenMs: nextMax };
+    saveLocalLicenseState(nextState);
+    return { nextState, rollbackDetected };
+  }
+  return { nextState: state, rollbackDetected };
+}
+
+export function evaluateLicense(
+  state: LocalLicenseState,
+  nowMs = Date.now(),
+  nativeRollbackDetected = false
+): LicenseEvaluation {
+  const effectiveNowMs = Math.max(nowMs, state.maxSeenMs || 0, state.trialStartMs || 0);
+  const clockRolledBack =
+    nativeRollbackDetected ||
+    ((state.maxSeenMs || 0) > 0 && nowMs < state.maxSeenMs - CLOCK_ROLLBACK_TOLERANCE_MS);
+
   if (state.activationCode) {
-    const check = verifyActivationCode(state.activationCode, state.deviceId, nowMs);
+    const check = verifyActivationCode(state.activationCode, state.deviceId, effectiveNowMs);
     if (check.valid && check.plan === 'permanen') {
       return {
         status: 'licensed_permanent',
@@ -462,7 +506,18 @@ export function evaluateLicense(state: LocalLicenseState, nowMs = Date.now()): L
       };
     }
     if (check.valid && check.plan === 'berjangka' && check.expiresAtMs) {
-      const daysLeft = Math.max(1, Math.ceil((check.expiresAtMs - nowMs) / MS_PER_DAY));
+      if (clockRolledBack) {
+        return {
+          status: 'clock_tampered',
+          isUnlocked: false,
+          daysLeft: 0,
+          expiresAtMs: check.expiresAtMs,
+          headline: 'Jam / Tanggal HP Dimundurkan',
+          detail:
+            'Sistem mendeteksi jam atau tanggal HP dimundurkan dari waktu terakhir. Kembalikan pengaturan tanggal HP ke Otomatis atau masukkan Kode Permanen.',
+        };
+      }
+      const daysLeft = Math.max(1, Math.ceil((check.expiresAtMs - effectiveNowMs) / MS_PER_DAY));
       return {
         status: 'licensed_timed',
         isUnlocked: true,
@@ -484,26 +539,14 @@ export function evaluateLicense(state: LocalLicenseState, nowMs = Date.now()): L
     }
   }
 
-  const trialEndMs = state.trialStartMs + TRIAL_DAYS * MS_PER_DAY;
-  if (nowMs <= trialEndMs) {
-    const daysLeft = Math.max(1, Math.ceil((trialEndMs - nowMs) / MS_PER_DAY));
-    return {
-      status: 'trial',
-      isUnlocked: true,
-      daysLeft,
-      expiresAtMs: trialEndMs,
-      headline: `Uji Coba Gratis · Sisa ${daysLeft} Hari`,
-      detail: `Aktif hingga ${formatDateShort(trialEndMs)}. Masukkan kode aktivasi sebelum masa coba berakhir.`,
-    };
-  }
-
   return {
-    status: 'expired',
+    status: 'unactivated',
     isUnlocked: false,
     daysLeft: 0,
-    expiresAtMs: trialEndMs,
-    headline: 'Masa Uji Coba Berakhir',
-    detail: 'Uji coba gratis 7 hari sudah selesai. Kirim ID Perangkat ke penjual untuk mendapatkan kode aktivasi.',
+    expiresAtMs: null,
+    headline: 'Aplikasi Belum Diaktivasi',
+    detail:
+      'Kirim ID Perangkat HP ini ke penjual untuk mendapatkan Kode Uji Coba 7 Hari atau Kode Aktivasi Penuh.',
   };
 }
 

@@ -71,6 +71,14 @@ jobs:
               }
             }
             fs.writeFileSync(p, xml);
+            const fpPath = "android/app/src/main/res/xml/file_paths.xml";
+            if (fs.existsSync(fpPath)) {
+              let fp = fs.readFileSync(fpPath, "utf8");
+              if (!fp.includes("cache-path")) {
+                fp = fp.replace("</paths>", "    <cache-path name=\"my_cache_images\" path=\".\" />\n</paths>");
+                fs.writeFileSync(fpPath, fp);
+              }
+            }
           '
           npx cap sync android
           node -e '

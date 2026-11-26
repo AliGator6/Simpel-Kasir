@@ -5,9 +5,11 @@ import {
   EMPTY_DRAFT,
   clearActiveDraft,
   formatDateShort,
+  hasStoredLocalAppData,
   hashOwnerPasscode,
   loadActiveDraft,
   loadAppData,
+  recoverAppDataFromIndexedDB,
   saveActiveDraft,
   saveAppData,
 } from './utils/storage';
@@ -27,9 +29,10 @@ import {
   markDailyExpiryReminderShown,
   saveLocalLicenseState,
   shouldShowDailyExpiryReminder,
+  touchLicenseClock,
   verifyActivationCode,
 } from './utils/license';
-import { fetchNativeLicenseInfo, persistNativeLicenseCode } from './utils/printer';
+import { fetchNativeLicenseInfo, persistNativeLicenseCode, pingNativeLicenseClock } from './utils/printer';
 
 declare global {
   interface Window {
@@ -43,10 +46,10 @@ interface ErrorBoundaryState {
 }
 
 class AppErrorBoundary extends React.Component<
-  { children: React.ReactNode },
+  { children: React.ReactNode; onResetToHome?: () => void },
   ErrorBoundaryState
 > {
-  constructor(props: { children: React.ReactNode }) {
+  constructor(props: { children: React.ReactNode; onResetToHome?: () => void }) {
     super(props);
     this.state = { hasError: false, errorMessage: '' };
   }
@@ -76,7 +79,10 @@ class AppErrorBoundary extends React.Component<
             )}
             <button
               type="button"
-              onClick={() => this.setState({ hasError: false, errorMessage: '' })}
+              onClick={() => {
+                this.props.onResetToHome?.();
+                this.setState({ hasError: false, errorMessage: '' });
+              }}
               className="btn-lux-primary w-full rounded-xl py-3 text-sm font-bold"
             >
               Pulihkan Aplikasi
@@ -107,10 +113,13 @@ export default function App() {
 
   const [licenseState, setLicenseState] = useState<LocalLicenseState>(() => loadLocalLicenseState());
   const [nativeLicenseChecked, setNativeLicenseChecked] = useState(false);
+  const [nativeClockRollback, setNativeClockRollback] = useState(false);
+  const [clockTickNow, setClockTickNow] = useState(() => Date.now());
   const [showExpiryReminder, setShowExpiryReminder] = useState(false);
   const [showActivationModal, setShowActivationModal] = useState(false);
   const [showVendorGenerator, setShowVendorGenerator] = useState(false);
 
+  const recoveryPendingRef = useRef(!hasStoredLocalAppData());
   const lastNavToHomeAtRef = useRef<number>(0);
   const homeExitTapAtRef = useRef<number>(0);
 
@@ -124,6 +133,26 @@ export default function App() {
   useBackClose(showActivationModal, () => setShowActivationModal(false));
   useBackClose(showVendorGenerator, () => setShowVendorGenerator(false));
   useBackClose(showExpiryReminder, () => setShowExpiryReminder(false));
+
+  useEffect(() => {
+    if (!recoveryPendingRef.current) return;
+    let cancelled = false;
+    recoverAppDataFromIndexedDB().then((recovered) => {
+      if (cancelled) return;
+      recoveryPendingRef.current = false;
+      if (recovered) {
+        setData(recovered);
+      } else {
+        setData((cur) => {
+          saveAppData(cur);
+          return cur;
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -140,16 +169,20 @@ export default function App() {
       .then((nativeInfo) => {
         if (cancelled) return;
         if (nativeInfo) {
+          if (nativeInfo.clockRollbackDetected) {
+            setNativeClockRollback(true);
+          }
           setLicenseState((prev) => {
             const deviceId = nativeInfo.deviceId || prev.deviceId;
             const trialStartMs = Math.min(prev.trialStartMs, nativeInfo.trialStartMs);
+            const maxSeenMs = Math.max(prev.maxSeenMs || 0, nativeInfo.maxSeenMs || 0, Date.now());
             let activationCode = prev.activationCode;
-            if (nativeInfo.activationCode && verifyActivationCode(nativeInfo.activationCode, deviceId).valid) {
+            if (nativeInfo.activationCode && verifyActivationCode(nativeInfo.activationCode, deviceId, maxSeenMs).valid) {
               activationCode = nativeInfo.activationCode;
-            } else if (prev.activationCode && verifyActivationCode(prev.activationCode, deviceId).valid) {
+            } else if (prev.activationCode && verifyActivationCode(prev.activationCode, deviceId, maxSeenMs).valid) {
               persistNativeLicenseCode(prev.activationCode);
             }
-            const merged: LocalLicenseState = { deviceId, trialStartMs, activationCode };
+            const merged: LocalLicenseState = { deviceId, trialStartMs, maxSeenMs, activationCode };
             saveLocalLicenseState(merged);
             return merged;
           });
@@ -163,8 +196,51 @@ export default function App() {
     };
   }, []);
 
+  const syncClockHeartbeat = async () => {
+    const now = Date.now();
+    setClockTickNow(now);
+    setLicenseState((prev) => {
+      const { nextState } = touchLicenseClock(prev, now);
+      return nextState;
+    });
+    const nativeClock = await pingNativeLicenseClock();
+    if (nativeClock) {
+      setNativeClockRollback(nativeClock.clockRollbackDetected);
+      setLicenseState((prev) => {
+        const nextMax = Math.max(prev.maxSeenMs || 0, nativeClock.maxSeenMs || 0, now);
+        if (nextMax > prev.maxSeenMs) {
+          const updated: LocalLicenseState = { ...prev, maxSeenMs: nextMax };
+          saveLocalLicenseState(updated);
+          return updated;
+        }
+        return prev;
+      });
+    }
+    return nativeClock;
+  };
+
   useEffect(() => {
-    saveAppData(data);
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void syncClockHeartbeat();
+      }
+    };
+    const interval = window.setInterval(() => {
+      void syncClockHeartbeat();
+    }, 30_000);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!recoveryPendingRef.current) {
+      saveAppData(data);
+    }
     const root = document.documentElement;
     if (data.darkMode) root.classList.add('dark');
     else root.classList.remove('dark');
@@ -190,18 +266,38 @@ export default function App() {
     setScreen(next);
   };
 
+  const licenseEval = evaluateLicense(licenseState, clockTickNow, nativeClockRollback);
+
   // Android Taskbar / Hardware Back Button Guard & Hierarchical Navigation
   const stateRef = useRef({
     screen,
     prevScreen,
     drawerOpen,
     draft,
+    isUnlocked: licenseEval.isUnlocked,
   });
-  stateRef.current = { screen, prevScreen, drawerOpen, draft };
+  stateRef.current = { screen, prevScreen, drawerOpen, draft, isUnlocked: licenseEval.isUnlocked };
 
   useEffect(() => {
     window.__handleAndroidBack = (): 'handled' | 'exit' => {
-      const { screen: cur, prevScreen: prev, drawerOpen: isDrawer, draft: curDraft } = stateRef.current;
+      const { screen: cur, prevScreen: prev, drawerOpen: isDrawer, draft: curDraft, isUnlocked } = stateRef.current;
+
+      // If app is locked (expired or clock tampered), close open modals (e.g. Vendor generator) or double-tap to exit
+      if (!isUnlocked) {
+        const backEvent = new CustomEvent('simpelkasir-back-request', { cancelable: true });
+        window.dispatchEvent(backEvent);
+        if (backEvent.defaultPrevented) {
+          return 'handled';
+        }
+        const now = Date.now();
+        const elapsed = now - homeExitTapAtRef.current;
+        if (elapsed >= 250 && elapsed <= 2200) {
+          return 'exit';
+        }
+        homeExitTapAtRef.current = now;
+        notify('Tekan kembali sekali lagi untuk keluar');
+        return 'handled';
+      }
 
       // 1. Close Drawer if open
       if (isDrawer) {
@@ -442,17 +538,22 @@ export default function App() {
     notify('Berhasil login sebagai Pemilik. Laba ditampilkan.');
   };
 
-  const licenseEval = evaluateLicense(licenseState);
-
   useEffect(() => {
     if (!nativeLicenseChecked) return;
-    if (shouldShowDailyExpiryReminder(licenseEval)) {
-      markDailyExpiryReminderShown();
+    if (shouldShowDailyExpiryReminder(licenseEval, Math.max(clockTickNow, licenseState.maxSeenMs || 0))) {
+      markDailyExpiryReminderShown(Math.max(clockTickNow, licenseState.maxSeenMs || 0));
       setShowExpiryReminder(true);
     } else if (!licenseEval.isUnlocked || licenseEval.status === 'licensed_permanent') {
       setShowExpiryReminder(false);
     }
-  }, [nativeLicenseChecked, licenseEval.isUnlocked, licenseEval.status, licenseEval.daysLeft]);
+  }, [
+    nativeLicenseChecked,
+    licenseEval.isUnlocked,
+    licenseEval.status,
+    licenseEval.daysLeft,
+    clockTickNow,
+    licenseState.maxSeenMs,
+  ]);
 
   useEffect(() => {
     if (!showExpiryReminder) return;
@@ -462,14 +563,30 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [showExpiryReminder]);
 
+  const handleRecheckClock = async () => {
+    const now = Date.now();
+    const nativeClock = await syncClockHeartbeat();
+    const effectiveMax = Math.max(licenseState.maxSeenMs || 0, nativeClock?.maxSeenMs || 0);
+    const stillTampered =
+      Boolean(nativeClock?.clockRollbackDetected) ||
+      (effectiveMax > 0 && now < effectiveMax - 300_000);
+    if (stillTampered) {
+      notify('Jam HP masih terdeteksi mundur. Aktifkan Waktu Otomatis di Pengaturan HP.');
+    } else {
+      notify('Jam HP normal kembali.');
+    }
+  };
+
   const handleActivateSuccess = (normalizedCode: string) => {
-    const check = verifyActivationCode(normalizedCode, licenseState.deviceId);
+    const effectiveNowMs = Math.max(Date.now(), licenseState.maxSeenMs || 0);
+    const check = verifyActivationCode(normalizedCode, licenseState.deviceId, effectiveNowMs);
     if (!check.valid) {
       notify(check.reason || 'Kode aktivasi tidak valid');
       return;
     }
     const next: LocalLicenseState = {
       ...licenseState,
+      maxSeenMs: Math.max(licenseState.maxSeenMs || 0, Date.now()),
       activationCode: normalizedCode,
     };
     setLicenseState(next);
@@ -484,15 +601,22 @@ export default function App() {
     );
   };
 
+  const handleResetToHome = () => {
+    setDrawerOpen(false);
+    setScreen('home');
+  };
+
   if (!licenseEval.isUnlocked) {
     return (
-      <AppErrorBoundary>
+      <AppErrorBoundary onResetToHome={handleResetToHome}>
         <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
           <ActivationGateScreen
             mode="locked"
             deviceId={licenseState.deviceId}
+            maxSeenMs={licenseState.maxSeenMs}
             evaluation={licenseEval}
             onActivateSuccess={handleActivateSuccess}
+            onRecheckClock={handleRecheckClock}
             onOpenVendorGenerator={() => setShowVendorGenerator(true)}
             notify={notify}
           />
@@ -514,7 +638,7 @@ export default function App() {
   }
 
   return (
-    <AppErrorBoundary>
+    <AppErrorBoundary onResetToHome={handleResetToHome}>
       <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
       <Drawer
         open={drawerOpen}
@@ -812,8 +936,10 @@ export default function App() {
         <ActivationGateScreen
           mode="modal"
           deviceId={licenseState.deviceId}
+          maxSeenMs={licenseState.maxSeenMs}
           evaluation={licenseEval}
           onActivateSuccess={handleActivateSuccess}
+          onRecheckClock={handleRecheckClock}
           onClose={() => setShowActivationModal(false)}
           onOpenVendorGenerator={() => {
             setShowActivationModal(false);

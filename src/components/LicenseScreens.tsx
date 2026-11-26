@@ -1,10 +1,12 @@
 import React, { useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Check,
   Copy,
   KeyRound,
   Lock,
   MessageCircle,
+  RefreshCw,
   ShieldCheck,
   Smartphone,
   Unlock,
@@ -28,8 +30,10 @@ import { formatDateShort } from '../utils/storage';
 interface ActivationGateScreenProps {
   mode: 'locked' | 'modal';
   deviceId: string;
+  maxSeenMs: number;
   evaluation: LicenseEvaluation;
   onActivateSuccess: (normalizedCode: string) => void;
+  onRecheckClock?: () => void;
   onClose?: () => void;
   onOpenVendorGenerator: () => void;
   notify: (msg: string) => void;
@@ -38,8 +42,10 @@ interface ActivationGateScreenProps {
 export const ActivationGateScreen: React.FC<ActivationGateScreenProps> = ({
   mode,
   deviceId,
+  maxSeenMs,
   evaluation,
   onActivateSuccess,
+  onRecheckClock,
   onClose,
   onOpenVendorGenerator,
   notify,
@@ -76,7 +82,8 @@ export const ActivationGateScreen: React.FC<ActivationGateScreenProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const result = verifyActivationCode(codeInput, deviceId);
+    const effectiveNowMs = Math.max(Date.now(), maxSeenMs || 0);
+    const result = verifyActivationCode(codeInput, deviceId, effectiveNowMs);
     if (!result.valid || !result.normalizedCode) {
       setErrorMsg(result.reason || 'Kode aktivasi tidak valid.');
       return;
@@ -84,7 +91,7 @@ export const ActivationGateScreen: React.FC<ActivationGateScreenProps> = ({
     onActivateSuccess(result.normalizedCode);
   };
 
-  const waRequestText = `Halo Admin SimpelKasir, saya mau aktivasi aplikasi kasir.\nID Perangkat: ${deviceId}`;
+  const waRequestText = `Halo Admin SimpelKasir, saya mau aktivasi / coba aplikasi kasir.\nID Perangkat: ${deviceId}`;
   const waHref = `https://wa.me/?text=${encodeURIComponent(waRequestText)}`;
 
   const cardBody = (
@@ -116,6 +123,28 @@ export const ActivationGateScreen: React.FC<ActivationGateScreenProps> = ({
           </button>
         )}
       </div>
+
+      {evaluation.status === 'clock_tampered' && (
+        <div className="rounded-2xl border border-[#B54B54]/35 bg-[#B54B54]/10 p-3.5 space-y-2.5">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="h-5 w-5 shrink-0 text-[#B54B54] dark:text-[#E07A82] mt-0.5" />
+            <p className="text-xs leading-relaxed text-[#7F2D34] dark:text-[#F0A3AA]">
+              Jam / tanggal HP terdeteksi dimundurkan. Buka Pengaturan HP &gt; Tanggal &amp; Waktu, aktifkan{' '}
+              <b>Waktu Otomatis</b>, lalu ketuk tombol di bawah.
+            </p>
+          </div>
+          {onRecheckClock && (
+            <button
+              type="button"
+              onClick={onRecheckClock}
+              className="btn-lux-soft flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-bold text-[#17252B] dark:text-white"
+            >
+              <RefreshCw className="h-4 w-4" />
+              <span>Periksa Ulang Jam HP</span>
+            </button>
+          )}
+        </div>
+      )}
 
       <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
         {evaluation.detail} Semua data produk, pelanggan, dan transaksi Anda tetap aman tersimpan di HP ini.
@@ -166,7 +195,7 @@ export const ActivationGateScreen: React.FC<ActivationGateScreenProps> = ({
               setCodeInput(formatActivationInput(e.target.value));
               setErrorMsg('');
             }}
-            placeholder="Contoh: P222-XXXX-XXXX"
+            placeholder="Contoh: D23B-XXXX-XXXX atau P222-XXXX-XXXX"
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck={false}
@@ -407,10 +436,11 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
                 <div className="mt-1.5 grid grid-cols-2 gap-2">
                   {(
                     [
-                      { id: 'permanen', label: 'Permanen' },
-                      { id: '30d', label: '30 Hari' },
-                      { id: '90d', label: '90 Hari' },
-                      { id: '365d', label: '1 Tahun' },
+                      { id: '7d', label: 'Trial 7 Hari', full: false },
+                      { id: '30d', label: '30 Hari', full: false },
+                      { id: '90d', label: '90 Hari', full: false },
+                      { id: '365d', label: '1 Tahun', full: false },
+                      { id: 'permanen', label: 'Permanen (Selamanya)', full: true },
                     ] as const
                   ).map((opt) => (
                     <button
@@ -418,6 +448,8 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
                       type="button"
                       onClick={() => setPlan(opt.id)}
                       className={`min-h-[44px] rounded-xl px-3 py-2 text-xs font-bold transition ${
+                        opt.full ? 'col-span-2' : ''
+                      } ${
                         plan === opt.id
                           ? 'btn-lux-primary'
                           : 'btn-lux-soft text-slate-700 dark:text-slate-200'

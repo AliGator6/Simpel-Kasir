@@ -58,6 +58,8 @@ interface NativePrinterPlugin {
     fileName: string;
     base64: string;
     text?: string;
+    preferWhatsApp?: boolean;
+    chooserTitle?: string;
   }): Promise<{ ok: boolean; uri?: string }>;
   startWifiCsvServer?(options: {
     content: string;
@@ -76,7 +78,16 @@ interface NativePrinterPlugin {
   getDeviceLicenseInfo?(): Promise<{
     deviceId: string;
     trialStartMs: number;
+    maxSeenMs?: number;
+    clockRollbackDetected?: boolean;
+    wallNowMs?: number;
     activationCode: string;
+  }>;
+  pingLicenseClock?(): Promise<{
+    trialStartMs: number;
+    maxSeenMs: number;
+    clockRollbackDetected: boolean;
+    wallNowMs: number;
   }>;
   saveNativeLicense?(options: { activationCode: string }): Promise<{ ok: boolean }>;
 }
@@ -144,11 +155,21 @@ function getNativePrinter(): NativePrinterPlugin | null {
       downloadWifiCsv: (options) =>
         np<WifiDownloadResult>('BluetoothPrinter', 'downloadWifiCsv', options),
       getDeviceLicenseInfo: () =>
-        np<{ deviceId: string; trialStartMs: number; activationCode: string }>(
-          'BluetoothPrinter',
-          'getDeviceLicenseInfo',
-          {}
-        ),
+        np<{
+          deviceId: string;
+          trialStartMs: number;
+          maxSeenMs?: number;
+          clockRollbackDetected?: boolean;
+          wallNowMs?: number;
+          activationCode: string;
+        }>('BluetoothPrinter', 'getDeviceLicenseInfo', {}),
+      pingLicenseClock: () =>
+        np<{
+          trialStartMs: number;
+          maxSeenMs: number;
+          clockRollbackDetected: boolean;
+          wallNowMs: number;
+        }>('BluetoothPrinter', 'pingLicenseClock', {}),
       saveNativeLicense: (options) =>
         np<{ ok: boolean }>('BluetoothPrinter', 'saveNativeLicense', options),
     };
@@ -165,6 +186,8 @@ export function isNativeAndroidPrinterAvailable(): boolean {
 export async function fetchNativeLicenseInfo(): Promise<{
   deviceId: string;
   trialStartMs: number;
+  maxSeenMs: number;
+  clockRollbackDetected: boolean;
   activationCode: string;
 } | null> {
   const native = getNativePrinter();
@@ -175,11 +198,35 @@ export async function fetchNativeLicenseInfo(): Promise<{
       return {
         deviceId: res.deviceId,
         trialStartMs: Number(res.trialStartMs) || Date.now(),
+        maxSeenMs: Number(res.maxSeenMs) || Number(res.trialStartMs) || Date.now(),
+        clockRollbackDetected: Boolean(res.clockRollbackDetected),
         activationCode: typeof res.activationCode === 'string' ? res.activationCode : '',
       };
     }
   } catch {
     // Ignore when running on older APK without native license bridge
+  }
+  return null;
+}
+
+export async function pingNativeLicenseClock(): Promise<{
+  trialStartMs: number;
+  maxSeenMs: number;
+  clockRollbackDetected: boolean;
+} | null> {
+  const native = getNativePrinter();
+  if (!native || typeof native.pingLicenseClock !== 'function') return null;
+  try {
+    const res = await native.pingLicenseClock();
+    if (res && typeof res.maxSeenMs === 'number') {
+      return {
+        trialStartMs: Number(res.trialStartMs) || Date.now(),
+        maxSeenMs: Number(res.maxSeenMs) || Date.now(),
+        clockRollbackDetected: Boolean(res.clockRollbackDetected),
+      };
+    }
+  } catch {
+    // Ignore
   }
   return null;
 }
@@ -272,18 +319,25 @@ export async function shareCanvasPng(
   fileName: string,
   canvas: HTMLCanvasElement,
   title: string,
-  text: string
-): Promise<'shared_native' | 'shared_web' | 'saved_fallback'> {
+  text: string,
+  options?: { preferWhatsApp?: boolean; chooserTitle?: string; ephemeralOnly?: boolean }
+): Promise<'shared_native' | 'shared_web' | 'copied_clipboard' | 'saved_fallback'> {
   const dataUrl = canvas.toDataURL('image/png');
   const base64 = dataUrl.split(',')[1] || '';
 
   const native = getNativePrinter();
   if (native && typeof native.shareImageFile === 'function' && base64) {
     try {
-      const res = await native.shareImageFile({ fileName, base64, text });
+      const res = await native.shareImageFile({
+        fileName,
+        base64,
+        text,
+        preferWhatsApp: options?.preferWhatsApp,
+        chooserTitle: options?.chooserTitle,
+      });
       if (res?.ok) return 'shared_native';
     } catch {
-      // Fallback to Web Share or saving in Downloads
+      // Fallback to Web Share
     }
   }
 
@@ -306,6 +360,15 @@ export async function shareCanvasPng(
         if ((err as Error)?.name === 'AbortError') {
           throw err;
         }
+      }
+    }
+
+    if (options?.ephemeralOnly && typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        return 'copied_clipboard';
+      } catch {
+        // Fallback to download only if clipboard write is blocked
       }
     }
   }

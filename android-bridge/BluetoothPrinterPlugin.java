@@ -24,11 +24,13 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Base64;
 
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -144,6 +146,7 @@ public class BluetoothPrinterPlugin extends Plugin {
     public void load() {
         super.load();
         registerBtStateMonitor();
+        cleanupShareTempCache();
     }
 
     private BluetoothAdapter getAdapter() {
@@ -644,11 +647,41 @@ public class BluetoothPrinterPlugin extends Plugin {
         });
     }
 
+    private boolean isPackageInstalled(PackageManager pm, String packageName) {
+        try {
+            pm.getPackageInfo(packageName, 0);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void cleanupShareTempCache() {
+        try {
+            File dir = new File(getContext().getCacheDir(), "shared_temp");
+            if (dir.exists() && dir.isDirectory()) {
+                File[] old = dir.listFiles();
+                if (old != null) {
+                    for (File f : old) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     @PluginMethod
     public void shareImageFile(PluginCall call) {
         String fileName = sanitizeFileName(call.getString("fileName", "Laporan_SimpelKasir.png"), "Laporan_SimpelKasir.png");
         String base64 = call.getString("base64");
         String text = call.getString("text", "");
+        boolean preferWhatsApp = Boolean.TRUE.equals(call.getBoolean("preferWhatsApp", false));
+        String chooserTitle = call.getString("chooserTitle", "Kirim Gambar ke WhatsApp");
+        if (chooserTitle == null || chooserTitle.trim().isEmpty()) {
+            chooserTitle = "Kirim Gambar ke WhatsApp";
+        }
+        final String finalChooserTitle = chooserTitle;
         if (base64 == null || base64.isEmpty()) {
             call.reject("Data gambar kosong.");
             return;
@@ -657,27 +690,54 @@ public class BluetoothPrinterPlugin extends Plugin {
         executor.execute(() -> {
             try {
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
-                ContentResolver resolver = getContext().getContentResolver();
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SimpelKasir");
-                    values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                Uri imageUri = null;
+
+                // Utamakan FileProvider di cache internal (tidak memenuhi Galeri/Downloads HP)
+                try {
+                    cleanupShareTempCache();
+                    File cacheSubDir = new File(getContext().getCacheDir(), "shared_temp");
+                    if (!cacheSubDir.exists()) {
+                        //noinspection ResultOfMethodCallIgnored
+                        cacheSubDir.mkdirs();
+                    }
+                    File tempFile = new File(cacheSubDir, fileName);
+                    try (FileOutputStream fos = new FileOutputStream(tempFile, false)) {
+                        fos.write(bytes);
+                        fos.flush();
+                    }
+                    imageUri = FileProvider.getUriForFile(
+                        getContext(),
+                        getContext().getPackageName() + ".fileprovider",
+                        tempFile
+                    );
+                } catch (Throwable ignoredFileProvider) {
+                    imageUri = null;
                 }
-                Uri imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+
+                // Fallback MediaStore hanya jika FileProvider tidak tersedia di ROM tertentu
                 if (imageUri == null) {
-                    throw new IOException("Gagal menyiapkan gambar untuk dibagikan.");
-                }
-                try (OutputStream os = resolver.openOutputStream(imageUri)) {
-                    if (os == null) throw new IOException("Stream gambar null.");
-                    os.write(bytes);
-                    os.flush();
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    ContentValues done = new ContentValues();
-                    done.put(MediaStore.Images.Media.IS_PENDING, 0);
-                    resolver.update(imageUri, done, null, null);
+                    ContentResolver resolver = getContext().getContentResolver();
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SimpelKasir");
+                        values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                    }
+                    imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                    if (imageUri == null) {
+                        throw new IOException("Gagal menyiapkan gambar untuk dibagikan.");
+                    }
+                    try (OutputStream os = resolver.openOutputStream(imageUri)) {
+                        if (os == null) throw new IOException("Stream gambar null.");
+                        os.write(bytes);
+                        os.flush();
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ContentValues done = new ContentValues();
+                        done.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        resolver.update(imageUri, done, null, null);
+                    }
                 }
 
                 Intent shareIntent = new Intent(Intent.ACTION_SEND);
@@ -688,15 +748,59 @@ public class BluetoothPrinterPlugin extends Plugin {
                 }
                 shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-                Intent chooser = Intent.createChooser(shareIntent, "Kirim Gambar Laporan ke WhatsApp");
-                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                getContext().startActivity(chooser);
+                String targetPkg = null;
+                if (preferWhatsApp) {
+                    PackageManager pm = getContext().getPackageManager();
+                    boolean hasWa = isPackageInstalled(pm, "com.whatsapp");
+                    boolean hasWaBiz = isPackageInstalled(pm, "com.whatsapp.w4b");
+                    if (hasWa && !hasWaBiz) {
+                        targetPkg = "com.whatsapp";
+                    } else if (hasWaBiz && !hasWa) {
+                        targetPkg = "com.whatsapp.w4b";
+                    }
+                }
+
+                Intent launchIntent;
+                if (targetPkg != null) {
+                    Intent directIntent = new Intent(shareIntent);
+                    directIntent.setPackage(targetPkg);
+                    launchIntent = directIntent;
+                } else {
+                    launchIntent = Intent.createChooser(shareIntent, finalChooserTitle);
+                }
+                Intent fallbackChooser = Intent.createChooser(shareIntent, finalChooserTitle);
+
+                android.app.Activity act = getActivity();
+                if (act != null && !act.isFinishing() && !act.isDestroyed()) {
+                    act.runOnUiThread(() -> {
+                        try {
+                            act.startActivity(launchIntent);
+                        } catch (Exception ignored) {
+                            try {
+                                act.startActivity(fallbackChooser);
+                            } catch (Exception ignored2) {
+                                try {
+                                    fallbackChooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                                    getContext().startActivity(fallbackChooser);
+                                } catch (Exception ignored3) {}
+                            }
+                        }
+                    });
+                } else {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    try {
+                        getContext().startActivity(launchIntent);
+                    } catch (Exception ignored) {
+                        fallbackChooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        getContext().startActivity(fallbackChooser);
+                    }
+                }
 
                 JSObject ok = new JSObject();
                 ok.put("ok", true);
                 ok.put("uri", imageUri.toString());
                 call.resolve(ok);
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 call.reject("Gagal membagikan gambar: " + e.getMessage());
             }
         });
@@ -1624,6 +1728,7 @@ public class BluetoothPrinterPlugin extends Plugin {
 
     private static final String LIC_PREFS_NAME = "simpelkasir_lic_prefs";
     private static final String LIC_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private long lastElapsedSampleMs = -1L;
 
     private String computeShortDeviceId(String rawSeed) {
         try {
@@ -1641,6 +1746,34 @@ public class BluetoothPrinterPlugin extends Plugin {
             while (clean.length() < 8) clean += "7";
             return "SK-" + clean.substring(0, 4) + "-" + clean.substring(4, 8);
         }
+    }
+
+    private long[] syncAndAdvanceClock(SharedPreferences prefs) {
+        long wallNow = System.currentTimeMillis();
+        long elapsedNow = SystemClock.elapsedRealtime();
+        long elapsedDelta = 0L;
+        if (lastElapsedSampleMs >= 0L && elapsedNow >= lastElapsedSampleMs) {
+            elapsedDelta = elapsedNow - lastElapsedSampleMs;
+        }
+        lastElapsedSampleMs = elapsedNow;
+
+        long prevMax = prefs.getLong("maxSeenMs", 0L);
+        long trialStartMs = prefs.getLong("trialStartMs", 0L);
+        if (trialStartMs <= 0L) {
+            trialStartMs = wallNow;
+            prefs.edit().putLong("trialStartMs", trialStartMs).apply();
+        }
+
+        // Detect deliberate clock rollback (> 5 minutes earlier than highest recorded time)
+        boolean rollbackDetected = prevMax > 0L && wallNow < (prevMax - 300_000L);
+
+        // Advance monotonic high-water timestamp even if wall clock is frozen or rolled back
+        long candidateMax = prevMax > 0L ? (prevMax + elapsedDelta) : wallNow;
+        long nextMax = Math.max(wallNow, Math.max(trialStartMs, candidateMax));
+        if (nextMax > prevMax) {
+            prefs.edit().putLong("maxSeenMs", nextMax).apply();
+        }
+        return new long[]{trialStartMs, nextMax, rollbackDetected ? 1L : 0L, wallNow};
     }
 
     @PluginMethod
@@ -1663,21 +1796,35 @@ public class BluetoothPrinterPlugin extends Plugin {
                 prefs.edit().putString("deviceId", deviceId).apply();
             }
 
-            long trialStartMs = prefs.getLong("trialStartMs", 0L);
-            if (trialStartMs <= 0L) {
-                trialStartMs = System.currentTimeMillis();
-                prefs.edit().putLong("trialStartMs", trialStartMs).apply();
-            }
-
+            long[] clockState = syncAndAdvanceClock(prefs);
             String activationCode = prefs.getString("activationCode", "");
 
             JSObject res = new JSObject();
             res.put("deviceId", deviceId);
-            res.put("trialStartMs", trialStartMs);
+            res.put("trialStartMs", clockState[0]);
+            res.put("maxSeenMs", clockState[1]);
+            res.put("clockRollbackDetected", clockState[2] == 1L);
+            res.put("wallNowMs", clockState[3]);
             res.put("activationCode", activationCode != null ? activationCode : "");
             call.resolve(res);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             call.reject("Gagal membaca info lisensi perangkat: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void pingLicenseClock(PluginCall call) {
+        try {
+            SharedPreferences prefs = getContext().getSharedPreferences(LIC_PREFS_NAME, Context.MODE_PRIVATE);
+            long[] clockState = syncAndAdvanceClock(prefs);
+            JSObject res = new JSObject();
+            res.put("trialStartMs", clockState[0]);
+            res.put("maxSeenMs", clockState[1]);
+            res.put("clockRollbackDetected", clockState[2] == 1L);
+            res.put("wallNowMs", clockState[3]);
+            call.resolve(res);
+        } catch (Throwable e) {
+            call.reject("Gagal sinkron waktu lisensi: " + e.getMessage());
         }
     }
 
@@ -1690,13 +1837,14 @@ public class BluetoothPrinterPlugin extends Plugin {
             JSObject ok = new JSObject();
             ok.put("ok", true);
             call.resolve(ok);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             call.reject("Gagal menyimpan lisensi perangkat: " + e.getMessage());
         }
     }
 
     @Override
     protected void handleOnDestroy() {
+        cleanupShareTempCache();
         stopWifiCsvServerInternal();
         cleanupDiscoveryReceiver();
         if (btStateReceiver != null) {

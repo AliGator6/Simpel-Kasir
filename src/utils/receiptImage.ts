@@ -1,5 +1,6 @@
 import { ReceiptSettings, StoreInfo, Transaction } from '../types';
 import { formatDateShort, formatMoney, formatNumber } from './storage';
+import { shareCanvasPng } from './printer';
 
 export function renderReceiptToCanvas(
   tx: Transaction,
@@ -149,45 +150,22 @@ export async function shareReceiptWhatsApp(
   store: StoreInfo,
   cfg: ReceiptSettings,
   currencySymbol: string
-): Promise<string> {
+): Promise<'shared_image' | 'copied_image' | 'saved_image'> {
   const canvas = renderReceiptToCanvas(tx, store, cfg, currencySymbol);
-  const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  const safeStore = (store.name || 'SimpelKasir').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  const fileName = `Struk_${tx.receiptNo}_${safeStore}.png`;
+  const title = `Struk #${tx.receiptNo} - ${store.name}`;
   const money = (v: number) => formatMoney(v, currencySymbol, cfg.currencySpace, cfg.currencyRight);
+  const caption = `*${store.name}* · Struk #${tx.receiptNo} (${money(tx.total)})`;
 
-  const captionLines = [
-    `*${store.name}*`,
-    `Struk #${tx.receiptNo} (${formatDateShort(tx.createdAt)})`,
-    ...tx.items.map((it) => `- ${it.name} (${it.qty}x ${formatNumber(it.unitPrice)}) = ${formatNumber(it.unitPrice * it.qty - it.discount)}`),
-    `*Total: ${money(tx.total)}*`,
-    tx.paidAmount > 0 ? `Bayar: ${money(tx.paidAmount)}` : 'Status: Belum Dibayar',
-    tx.changeAmount > 0 ? `Kembali: ${money(tx.changeAmount)}` : '',
-    store.footer || 'Terima kasih',
-  ].filter(Boolean);
+  const result = await shareCanvasPng(fileName, canvas, title, caption, {
+    preferWhatsApp: true,
+    chooserTitle: 'Kirim Struk PNG ke WhatsApp',
+    ephemeralOnly: true,
+  });
 
-  if (blob) {
-    const file = new File([blob], `Struk_${tx.receiptNo}_${store.name.replace(/\s+/g, '_')}.png`, { type: 'image/png' });
-    const nav = navigator as unknown as {
-      canShare?: (data: { files?: File[] }) => boolean;
-      share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>;
-    };
-    if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
-      await nav.share({
-        files: [file],
-        title: `Struk #${tx.receiptNo} - ${store.name}`,
-        text: captionLines.join('\n'),
-      });
-      return 'shared_image';
-    }
-    // Download image receipt so user can attach directly to WhatsApp if Web Share files unsupported
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Struk_${tx.receiptNo}.png`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  return captionLines.join('\n');
+  if (result === 'copied_clipboard') return 'copied_image';
+  return result === 'saved_fallback' ? 'saved_image' : 'shared_image';
 }
 
 export function renderDailyReportToCanvas(

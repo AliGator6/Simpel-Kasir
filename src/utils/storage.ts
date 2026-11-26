@@ -283,16 +283,28 @@ export function normalizeAppData(parsed: Partial<AppData> | null | undefined): A
         : DEFAULT_APP_DATA.master.suppliers,
     },
     users:
-      Array.isArray(safe.users) && safe.users.length > 0 ? safe.users : DEFAULT_APP_DATA.users,
+      Array.isArray(safe.users) && safe.users.filter((u) => u && typeof u === 'object').length > 0
+        ? safe.users.filter((u) => u && typeof u === 'object')
+        : DEFAULT_APP_DATA.users,
     activeUserId:
       typeof safe.activeUserId === 'string' && safe.activeUserId
         ? safe.activeUserId
         : DEFAULT_APP_DATA.activeUserId,
-    products: Array.isArray(safe.products) ? safe.products : DEFAULT_APP_DATA.products,
-    customers: Array.isArray(safe.customers) ? safe.customers : DEFAULT_APP_DATA.customers,
-    quickCarts: Array.isArray(safe.quickCarts) ? safe.quickCarts : [],
-    transactions: Array.isArray(safe.transactions) ? safe.transactions : [],
-    cashflows: Array.isArray(safe.cashflows) ? safe.cashflows : [],
+    products: Array.isArray(safe.products)
+      ? safe.products.filter((p) => p && typeof p === 'object' && typeof p.name === 'string')
+      : DEFAULT_APP_DATA.products,
+    customers: Array.isArray(safe.customers)
+      ? safe.customers.filter((c) => c && typeof c === 'object' && typeof c.name === 'string')
+      : DEFAULT_APP_DATA.customers,
+    quickCarts: Array.isArray(safe.quickCarts)
+      ? safe.quickCarts.filter((q) => q && typeof q === 'object' && Array.isArray(q.items))
+      : [],
+    transactions: Array.isArray(safe.transactions)
+      ? safe.transactions.filter((t) => t && typeof t === 'object' && Array.isArray(t.items))
+      : [],
+    cashflows: Array.isArray(safe.cashflows)
+      ? safe.cashflows.filter((c) => c && typeof c === 'object')
+      : [],
     nextReceiptNo:
       typeof safe.nextReceiptNo === 'number' && Number.isFinite(safe.nextReceiptNo) && safe.nextReceiptNo >= 1
         ? safe.nextReceiptNo
@@ -311,6 +323,14 @@ export function normalizeAppData(parsed: Partial<AppData> | null | undefined): A
   };
 }
 
+export function hasStoredLocalAppData(): boolean {
+  try {
+    return Boolean(localStorage.getItem(STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
 export function loadAppData(): AppData {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -320,6 +340,48 @@ export function loadAppData(): AppData {
   } catch {
     return DEFAULT_APP_DATA;
   }
+}
+
+export function recoverAppDataFromIndexedDB(): Promise<AppData | null> {
+  return new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') {
+      resolve(null);
+      return;
+    }
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+          req.result.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onerror = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        try {
+          const tx = db.transaction(IDB_STORE, 'readonly');
+          const getReq = tx.objectStore(IDB_STORE).get('latest');
+          getReq.onsuccess = () => {
+            try { db.close(); } catch { /* ignore */ }
+            if (getReq.result && typeof getReq.result === 'object') {
+              resolve(normalizeAppData(getReq.result as Partial<AppData>));
+            } else {
+              resolve(null);
+            }
+          };
+          getReq.onerror = () => {
+            try { db.close(); } catch { /* ignore */ }
+            resolve(null);
+          };
+        } catch {
+          try { db.close(); } catch { /* ignore */ }
+          resolve(null);
+        }
+      };
+    } catch {
+      resolve(null);
+    }
+  });
 }
 
 export function saveAppData(data: AppData): void {

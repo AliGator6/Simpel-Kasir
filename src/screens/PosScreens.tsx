@@ -139,6 +139,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [isNonCash, setIsNonCash] = useState(false);
   const [isSubmittingTx, setIsSubmittingTx] = useState(false);
   const [isPrintingReceipt, setIsPrintingReceipt] = useState(false);
+  const [isSharingReceipt, setIsSharingReceipt] = useState(false);
 
   // Sync paidInput when entering payment screen
   const prevScreenRef = useRef(screen);
@@ -2042,7 +2043,10 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
         </button>
         <button
           type="button"
+          disabled={isSharingReceipt}
           onClick={async () => {
+            if (isSharingReceipt) return;
+            setIsSharingReceipt(true);
             try {
               const res = await shareReceiptWhatsApp(
                 tx,
@@ -2051,19 +2055,26 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
                 data.currencySymbol
               );
               if (res === 'shared_image') {
-                notify('Gambar struk siap dibagikan ke WhatsApp');
+                notify('Struk PNG siap dikirim ke WhatsApp');
+              } else if (res === 'copied_image') {
+                notify('Struk PNG disalin ke clipboard (siap tempel di WhatsApp)');
               } else {
-                notify('Gambar struk diunduh & teks disiapkan untuk WhatsApp');
-                window.open(`https://wa.me/?text=${encodeURIComponent(res)}`, '_blank');
+                notify('Struk PNG disimpan sementara untuk dilampirkan di WhatsApp');
               }
-            } catch {
-              notify('Gagal membagikan struk');
+            } catch (err) {
+              if ((err as Error)?.name !== 'AbortError') {
+                notify('Gagal membuat gambar struk PNG');
+              }
+            } finally {
+              setIsSharingReceipt(false);
             }
           }}
-          className="flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[#165B49] dark:text-[#4BB89A] hover:bg-emerald-50 dark:hover:bg-[#1B2D28] active:scale-95 transition"
+          className="flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[#165B49] dark:text-[#4BB89A] hover:bg-emerald-50 dark:hover:bg-[#1B2D28] active:scale-95 transition disabled:opacity-50"
         >
-          <Share2 className="h-5 w-5" />
-          <span className="text-xs font-semibold">WhatsApp</span>
+          <Share2 className={`h-5 w-5 ${isSharingReceipt ? 'animate-pulse' : ''}`} />
+          <span className="text-xs font-semibold">
+            {isSharingReceipt ? 'Membuat PNG...' : 'WA (PNG)'}
+          </span>
         </button>
       </div>
     </div>
