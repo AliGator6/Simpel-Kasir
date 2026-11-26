@@ -16,6 +16,7 @@ export interface WifiSyncServerInfo {
   deviceName: string;
   fileName: string;
   productCount: number;
+  dataType?: string;
 }
 
 export interface WifiDiscoveredPeer {
@@ -25,6 +26,7 @@ export interface WifiDiscoveredPeer {
   deviceName: string;
   productCount: number;
   fileName: string;
+  dataType?: string;
 }
 
 export interface WifiDownloadResult {
@@ -33,6 +35,7 @@ export interface WifiDownloadResult {
   fileName: string;
   savedPath: string;
   storeName: string;
+  dataType?: string;
   saveWarning?: string;
 }
 
@@ -49,12 +52,19 @@ interface NativePrinterPlugin {
     content: string;
     mimeType: string;
     subFolder?: string;
+    isBase64?: boolean;
   }): Promise<{ ok: boolean; path?: string }>;
+  shareImageFile?(options: {
+    fileName: string;
+    base64: string;
+    text?: string;
+  }): Promise<{ ok: boolean; uri?: string }>;
   startWifiCsvServer?(options: {
     content: string;
     fileName: string;
     storeName: string;
     productCount: number;
+    dataType?: string;
   }): Promise<WifiSyncServerInfo>;
   stopWifiCsvServer?(): Promise<{ ok: boolean }>;
   discoverWifiCsvServers?(): Promise<{ servers: WifiDiscoveredPeer[] }>;
@@ -118,6 +128,8 @@ function getNativePrinter(): NativePrinterPlugin | null {
       testPrint: (options) => np<{ ok: boolean }>('BluetoothPrinter', 'testPrint', options),
       saveFileToDownloads: (options) =>
         np<{ ok: boolean; path?: string }>('BluetoothPrinter', 'saveFileToDownloads', options),
+      shareImageFile: (options) =>
+        np<{ ok: boolean; uri?: string }>('BluetoothPrinter', 'shareImageFile', options),
       startWifiCsvServer: (options) =>
         np<WifiSyncServerInfo>('BluetoothPrinter', 'startWifiCsvServer', options),
       stopWifiCsvServer: () => np<{ ok: boolean }>('BluetoothPrinter', 'stopWifiCsvServer', {}),
@@ -175,15 +187,97 @@ export async function saveExportFile(
   return { savedPath: fileName, isNative: false };
 }
 
+export async function saveCanvasPngToDevice(
+  fileName: string,
+  canvas: HTMLCanvasElement,
+  subFolder = 'SimpelKasir'
+): Promise<{ savedPath: string; isNative: boolean }> {
+  const dataUrl = canvas.toDataURL('image/png');
+  const base64 = dataUrl.split(',')[1] || '';
+  const native = getNativePrinter();
+  if (native && typeof native.saveFileToDownloads === 'function' && base64) {
+    const res = await native.saveFileToDownloads({
+      fileName,
+      content: base64,
+      mimeType: 'image/png',
+      subFolder,
+      isBase64: true,
+    });
+    if (res?.ok) {
+      return {
+        savedPath: res.path || `Download/${subFolder}/${fileName}`,
+        isNative: true,
+      };
+    }
+  }
+
+  const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('Gagal membuat file gambar PNG.');
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return { savedPath: fileName, isNative: false };
+}
+
+export async function shareCanvasPng(
+  fileName: string,
+  canvas: HTMLCanvasElement,
+  title: string,
+  text: string
+): Promise<'shared_native' | 'shared_web' | 'saved_fallback'> {
+  const dataUrl = canvas.toDataURL('image/png');
+  const base64 = dataUrl.split(',')[1] || '';
+
+  const native = getNativePrinter();
+  if (native && typeof native.shareImageFile === 'function' && base64) {
+    try {
+      const res = await native.shareImageFile({ fileName, base64, text });
+      if (res?.ok) return 'shared_native';
+    } catch {
+      // Fallback to Web Share or saving in Downloads
+    }
+  }
+
+  const blob: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (blob) {
+    const file = new File([blob], fileName, { type: 'image/png' });
+    const nav = navigator as unknown as {
+      canShare?: (d: { files?: File[] }) => boolean;
+      share?: (d: { files?: File[]; title?: string; text?: string }) => Promise<void>;
+    };
+    if (typeof nav.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
+      try {
+        await nav.share({
+          files: [file],
+          title,
+          text,
+        });
+        return 'shared_web';
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') {
+          throw err;
+        }
+      }
+    }
+  }
+
+  await saveCanvasPngToDevice(fileName, canvas, 'SimpelKasir');
+  return 'saved_fallback';
+}
+
 export async function startWifiCsvServer(options: {
   content: string;
   fileName: string;
   storeName: string;
   productCount: number;
+  dataType?: string;
 }): Promise<WifiSyncServerInfo> {
   const native = getNativePrinter();
   if (!native || typeof native.startWifiCsvServer !== 'function') {
-    throw new Error('Kirim CSV via WiFi langsung hanya tersedia di aplikasi APK Android.');
+    throw new Error('Kirim data via WiFi langsung hanya tersedia di aplikasi APK Android.');
   }
   return native.startWifiCsvServer(options);
 }
@@ -482,6 +576,95 @@ export async function printThermalTransaction(
       payload = doubled;
     }
     const base64 = uint8ToBase64(payload);
+    await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
+    return 'native';
+  }
+  window.print();
+  return 'browser';
+}
+
+export function buildDailyReportEscPosBytes(
+  dateLabel: string,
+  transactions: Transaction[],
+  store: StoreInfo,
+  receiptCfg: ReceiptSettings,
+  printerCfg: PrinterSettings,
+  currencySymbol: string
+): Uint8Array {
+  const cols = printerCfg.paperWidth === '80' ? 48 : 32;
+  const line = '-'.repeat(cols);
+  const b: number[] = [];
+  const pushText = (t: string) => b.push(...encodeAscii(t + '\n'));
+  const ESC = 0x1b;
+  const GS = 0x1d;
+
+  b.push(ESC, 0x40);
+  b.push(GS, 0x21, 0x00);
+  b.push(ESC, 0x45, 0x00);
+  b.push(ESC, 0x47, 0x00);
+
+  const spacing = printerCfg.lineSpacing ?? 'compact';
+  if (spacing === 'tight') b.push(ESC, 0x33, 24);
+  else if (spacing === 'compact') b.push(ESC, 0x33, 27);
+  else if (spacing === 'wide') b.push(ESC, 0x33, 36);
+  else b.push(ESC, 0x32);
+
+  b.push(ESC, 0x61, 0x01);
+  if (receiptCfg.largeStoreName) b.push(GS, 0x21, 0x11);
+  pushText(store.name);
+  b.push(GS, 0x21, 0x00);
+  pushText('LAPORAN HARIAN');
+  pushText(`Tanggal: ${dateLabel}`);
+
+  b.push(ESC, 0x61, 0x00);
+  pushText(line);
+  pushText(padRow('No. Transaksi', 'Total Harga', cols));
+  pushText(line);
+
+  const sorted = [...transactions].sort((a, c) => a.receiptNo - c.receiptNo || a.createdAt - c.createdAt);
+  const money = (v: number) =>
+    formatMoney(v, receiptCfg.showCurrency ? currencySymbol : '', receiptCfg.currencySpace, receiptCfg.currencyRight);
+
+  if (sorted.length === 0) {
+    pushText('Belum ada transaksi');
+  } else {
+    sorted.forEach((tx) => {
+      pushText(padRow(`#${tx.receiptNo}`, money(tx.total), cols));
+    });
+  }
+
+  const grandTotal = sorted.reduce((acc, tx) => acc + tx.total, 0);
+  pushText(line);
+  pushText(padRow('Jumlah Transaksi', `${sorted.length}`, cols));
+  pushText(padRow('Total Penjualan', money(grandTotal), cols));
+
+  b.push(ESC, 0x61, 0x00);
+  b.push(ESC, 0x45, 0x00);
+  b.push(GS, 0x21, 0x00);
+
+  const bottomMm = (printerCfg.bottomFeedMm ?? 5) + (printerCfg.cutFeedExtra ? 10 : 0);
+  appendBottomFeedMm(b, bottomMm);
+  if (printerCfg.paperWidth === '80') {
+    b.push(GS, 0x56, 0x42, 0x00);
+  }
+  return new Uint8Array(b);
+}
+
+export async function printDailyReportThermal(
+  dateLabel: string,
+  transactions: Transaction[],
+  store: StoreInfo,
+  receiptCfg: ReceiptSettings,
+  printerCfg: PrinterSettings,
+  currencySymbol: string
+): Promise<'native' | 'browser'> {
+  const native = getNativePrinter();
+  if (native) {
+    if (!printerCfg.selectedPrinterAddress) {
+      throw new Error('Pilih printer Bluetooth terlebih dahulu di Pengaturan > Printer.');
+    }
+    const bytes = buildDailyReportEscPosBytes(dateLabel, transactions, store, receiptCfg, printerCfg, currencySymbol);
+    const base64 = uint8ToBase64(bytes);
     await native.printBytes({ address: printerCfg.selectedPrinterAddress, base64 });
     return 'native';
   }

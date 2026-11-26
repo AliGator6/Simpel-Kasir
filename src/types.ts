@@ -246,4 +246,8 @@ export interface AppData {
   transactions: Transaction[];
   cashflows: CashflowEntry[];
   nextReceiptNo: number;
+  ownerAuth?: {
+    passHash: string;
+    updatedAt: number;
+  };
 }

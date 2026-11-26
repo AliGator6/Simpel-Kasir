@@ -13,6 +13,8 @@ import {
   Trash2,
   Printer,
   CheckCircle2,
+  Download,
+  Share2,
 } from 'lucide-react';
 import { AppData, CashflowKind, ProgressStatus, ScreenId, Transaction } from '../types';
 import { TopBar, useBackClose } from '../components/TopBar';
@@ -25,10 +27,17 @@ import {
   formatTimeOnly,
   toDateKey,
 } from '../utils/storage';
+import {
+  printDailyReportThermal,
+  saveCanvasPngToDevice,
+  shareCanvasPng,
+} from '../utils/printer';
+import { renderDailyReportToCanvas } from '../utils/receiptImage';
 
 interface FinanceProps {
   screen: 'transactions' | 'cashflow' | 'expenses' | 'reports';
   data: AppData;
+  isOwnerLoggedIn: boolean;
   onOpenDrawer: () => void;
   onNavigate: (s: ScreenId) => void;
   onOpenReceipt: (tx: Transaction) => void;
@@ -39,6 +48,7 @@ interface FinanceProps {
 export const FinanceScreens: React.FC<FinanceProps> = ({
   screen,
   data,
+  isOwnerLoggedIn,
   onOpenDrawer,
   onNavigate,
   onOpenReceipt,
@@ -63,6 +73,8 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
 
   // Reports filter
   const [reportRange, setReportRange] = useState<'today' | 'month' | 'all'>('today');
+  const [reportDateKey, setReportDateKey] = useState<string>(() => toDateKey(Date.now()));
+  const [busyReportAction, setBusyReportAction] = useState<'print' | 'wa' | 'save' | null>(null);
 
   // =========================================================
   // 1. DAFTAR TRANSAKSI
@@ -483,7 +495,7 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
                 type="button"
                 onClick={() => setCashModalKind('out_non_profit')}
                 className="btn-lux-gold flex h-9 w-11 items-center justify-center rounded-xl"
-                title="Uang Keluar (Non-Laba)"
+                title={isOwnerLoggedIn ? 'Uang Keluar (Non-Laba)' : 'Uang Keluar'}
               >
                 <Minus className="h-4 w-4" />
               </button>
@@ -513,7 +525,7 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
               type="button"
               onClick={() => setCashModalKind('expense_profit')}
               className="btn-lux-garnet flex h-9 w-11 items-center justify-center rounded-xl"
-              title="Catat Pengeluaran (Memotong Laba)"
+              title={isOwnerLoggedIn ? 'Catat Pengeluaran (Memotong Laba)' : 'Catat Pengeluaran'}
             >
               <Minus className="h-4 w-4" />
             </button>
@@ -584,21 +596,23 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
             </div>
           </div>
 
-          {/* Summary Card 2: Laba / Pengeluaran / Laba bersih */}
-          <div className="surface-card mt-3 rounded-2xl p-4 text-sm space-y-1.5 tabular-nums">
-            <div className="flex justify-between">
-              <span>Laba</span>
-              <span className="font-semibold">{formatNumber(grossProfitDay)}</span>
+          {/* Summary Card 2: Laba / Pengeluaran / Laba bersih (Hanya tampil jika pemilik login) */}
+          {isOwnerLoggedIn && (
+            <div className="surface-card mt-3 rounded-2xl p-4 text-sm space-y-1.5 tabular-nums">
+              <div className="flex justify-between">
+                <span>Laba</span>
+                <span className="font-semibold">{formatNumber(grossProfitDay)}</span>
+              </div>
+              <div className="flex justify-between text-[#B54B54]">
+                <span>Pengeluaran (laba)</span>
+                <span className="font-semibold">{formatNumber(expenseProfitDay)}</span>
+              </div>
+              <div className="flex justify-between border-t border-[#EAECE8] dark:border-[#223039] pt-1.5 font-bold text-base">
+                <span>Laba bersih</span>
+                <span className="font-display text-[#165B49] dark:text-[#4BB89A]">{formatNumber(netProfitDay)}</span>
+              </div>
             </div>
-            <div className="flex justify-between text-[#B54B54]">
-              <span>Pengeluaran (laba)</span>
-              <span className="font-semibold">{formatNumber(expenseProfitDay)}</span>
-            </div>
-            <div className="flex justify-between border-t border-[#EAECE8] dark:border-[#223039] pt-1.5 font-bold text-base">
-              <span>Laba bersih</span>
-              <span className="font-display text-[#165B49] dark:text-[#4BB89A]">{formatNumber(netProfitDay)}</span>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Add Cashflow Modal */}
@@ -609,8 +623,8 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
                 {cashModalKind === 'in'
                   ? 'Tambah Uang Masuk'
                   : cashModalKind === 'out_non_profit'
-                  ? 'Uang Keluar (Non-Laba)'
-                  : 'Catat Pengeluaran (Laba)'}
+                  ? (isOwnerLoggedIn ? 'Uang Keluar (Non-Laba)' : 'Uang Keluar')
+                  : (isOwnerLoggedIn ? 'Catat Pengeluaran (Laba)' : 'Catat Pengeluaran')}
               </h3>
               <input
                 type="text"
@@ -822,6 +836,92 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
     return Array.from(map.values()).sort((a, b) => b.qty - a.qty).slice(0, 5);
   }, [scopedTx]);
 
+  const dailyReportTx = useMemo(
+    () =>
+      data.transactions
+        .filter((t) => toDateKey(t.createdAt) === reportDateKey)
+        .sort((a, b) => a.receiptNo - b.receiptNo || a.createdAt - b.createdAt),
+    [data.transactions, reportDateKey]
+  );
+  const dailyReportTotal = dailyReportTx.reduce((acc, t) => acc + t.total, 0);
+  const [ry, rm, rd] = reportDateKey.split('-').map(Number);
+  const reportDateLabel = formatDayReadable(
+    new Date(ry || now.getFullYear(), (rm || now.getMonth() + 1) - 1, rd || now.getDate()).getTime()
+  );
+
+  const handlePrintDailyReport = async () => {
+    if (busyReportAction) return;
+    setBusyReportAction('print');
+    try {
+      const res = await printDailyReportThermal(
+        reportDateLabel,
+        dailyReportTx,
+        data.store,
+        data.receiptSettings,
+        data.printerSettings,
+        data.currencySymbol
+      );
+      notify(res === 'native' ? `Laporan ${reportDateLabel} dicetak!` : 'Dialog cetak laporan dibuka');
+    } catch (err) {
+      notify((err as Error).message || 'Gagal mencetak laporan harian');
+    } finally {
+      setBusyReportAction(null);
+    }
+  };
+
+  const handleShareDailyReportWa = async () => {
+    if (busyReportAction) return;
+    setBusyReportAction('wa');
+    try {
+      const canvas = renderDailyReportToCanvas(
+        reportDateLabel,
+        dailyReportTx,
+        data.store,
+        data.receiptSettings,
+        data.currencySymbol
+      );
+      const fileName = `Laporan_Harian_${reportDateKey}.png`;
+      const res = await shareCanvasPng(
+        fileName,
+        canvas,
+        `Laporan Harian ${data.store.name}`,
+        `Laporan Penjualan ${reportDateLabel} (${dailyReportTx.length} transaksi)`
+      );
+      if (res === 'saved_fallback') {
+        notify(`Gambar laporan disimpan ke Download/SimpelKasir/${fileName}`);
+      } else {
+        notify('Pilih WhatsApp untuk mengirim gambar laporan');
+      }
+    } catch (err) {
+      if ((err as Error).name !== 'AbortError') {
+        notify((err as Error).message || 'Gagal membagikan gambar laporan');
+      }
+    } finally {
+      setBusyReportAction(null);
+    }
+  };
+
+  const handleSaveDailyReportPng = async () => {
+    if (busyReportAction) return;
+    setBusyReportAction('save');
+    try {
+      const canvas = renderDailyReportToCanvas(
+        reportDateLabel,
+        dailyReportTx,
+        data.store,
+        data.receiptSettings,
+        data.currencySymbol
+      );
+      const fileName = `Laporan_Harian_${reportDateKey}.png`;
+      const res = await saveCanvasPngToDevice(fileName, canvas, 'SimpelKasir');
+      notify(res.isNative ? `Gambar tersimpan di ${res.savedPath}` : `Gambar laporan diunduh: ${fileName}`);
+    } catch (err) {
+      notify((err as Error).message || 'Gagal menyimpan gambar laporan');
+    } finally {
+      setBusyReportAction(null);
+    }
+  };
+
   return (
     <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418] pb-10">
       <TopBar title="Laporan" mode="menu" onLeftClick={onOpenDrawer} />
@@ -856,15 +956,17 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
             </p>
             <span className="text-[11px] text-slate-400">{scopedTx.length} transaksi</span>
           </div>
-          <div className="surface-card rounded-2xl p-4">
-            <span className="text-xs text-slate-500">Laba Bersih</span>
-            <p className="font-display mt-1 text-lg font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
-              {formatMoney(netProfit, data.currencySymbol)}
-            </p>
-            <span className="text-[11px] text-slate-400">
-              Kotor {formatMoney(grossProfit, data.currencySymbol)}
-            </span>
-          </div>
+          {isOwnerLoggedIn && (
+            <div className="surface-card rounded-2xl p-4">
+              <span className="text-xs text-slate-500">Laba Bersih</span>
+              <p className="font-display mt-1 text-lg font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
+                {formatMoney(netProfit, data.currencySymbol)}
+              </p>
+              <span className="text-[11px] text-slate-400">
+                Kotor {formatMoney(grossProfit, data.currencySymbol)}
+              </span>
+            </div>
+          )}
           <div className="surface-card rounded-2xl p-4">
             <span className="text-xs text-slate-500">Pengeluaran</span>
             <p className="font-display mt-1 text-lg font-bold tabular-nums text-[#B54B54]">
@@ -876,6 +978,101 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
             <p className="font-display mt-1 text-lg font-bold tabular-nums text-[#B07D32]">
               {formatMoney(totalReceivable, data.currencySymbol)}
             </p>
+          </div>
+        </div>
+
+        {/* Cetak & Softfile Laporan Harian (Pilih Tanggal) */}
+        <div className="surface-card rounded-2xl p-4 space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="font-display text-sm font-bold text-[#17252B] dark:text-white">
+                Cetak Laporan Harian
+              </h3>
+              <p className="text-[11px] text-slate-500">
+                Pilih tanggal untuk mencetak atau menyimpan laporan nomor transaksi &amp; total harga.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReportDateKey(todayKey)}
+              className="btn-lux-soft rounded-xl px-2.5 py-1.5 text-[11px] font-bold text-[#165B49] dark:text-[#4BB89A]"
+            >
+              Hari Ini
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-semibold text-slate-500 shrink-0">Tanggal:</label>
+            <input
+              type="date"
+              value={reportDateKey}
+              onChange={(e) => {
+                if (e.target.value) setReportDateKey(e.target.value);
+              }}
+              className="flex-1 rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-xs font-bold tabular-nums outline-none focus:border-[#165B49]"
+            />
+          </div>
+
+          {/* Pratinjau Struk/Softfile Harian */}
+          <div className="rounded-xl border border-[#DCE1DC] dark:border-[#2A3944] bg-[#F7F8F5] dark:bg-[#1B262E] p-3 text-xs space-y-2">
+            <div className="flex items-center justify-between border-b border-dashed border-slate-300 dark:border-slate-600 pb-2 font-bold">
+              <span>{reportDateLabel}</span>
+              <span className="text-[#165B49] dark:text-[#4BB89A]">
+                {dailyReportTx.length} transaksi
+              </span>
+            </div>
+            {dailyReportTx.length === 0 ? (
+              <p className="py-3 text-center text-slate-400">
+                Belum ada transaksi pada tanggal {reportDateLabel}.
+              </p>
+            ) : (
+              <div className="max-h-44 overflow-y-auto space-y-1 pr-1 tabular-nums">
+                <div className="flex justify-between text-[11px] font-semibold text-slate-500 pb-0.5">
+                  <span>No. Transaksi</span>
+                  <span>Total Harga</span>
+                </div>
+                {dailyReportTx.map((tx) => (
+                  <div key={tx.id} className="flex justify-between font-medium">
+                    <span>#{tx.receiptNo}</span>
+                    <span>{formatMoney(tx.total, data.currencySymbol)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex justify-between border-t border-dashed border-slate-300 dark:border-slate-600 pt-2 font-bold text-[#165B49] dark:text-[#4BB89A] tabular-nums">
+              <span>Total Penjualan</span>
+              <span>{formatMoney(dailyReportTotal, data.currencySymbol)}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <button
+              type="button"
+              disabled={Boolean(busyReportAction)}
+              onClick={handlePrintDailyReport}
+              className="btn-lux-primary flex items-center justify-center gap-2 rounded-xl py-2.5 px-3 text-xs font-bold disabled:opacity-60"
+            >
+              <Printer className="h-4 w-4 shrink-0" />
+              <span>{busyReportAction === 'print' ? 'Mencetak...' : 'Cetak Laporan'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={Boolean(busyReportAction)}
+              onClick={handleShareDailyReportWa}
+              className="btn-lux-gold flex items-center justify-center gap-2 rounded-xl py-2.5 px-3 text-xs font-bold disabled:opacity-60"
+            >
+              <Share2 className="h-4 w-4 shrink-0" />
+              <span>{busyReportAction === 'wa' ? 'Menyiapkan...' : 'Kirim WA (Gambar)'}</span>
+            </button>
+            <button
+              type="button"
+              disabled={Boolean(busyReportAction)}
+              onClick={handleSaveDailyReportPng}
+              className="btn-lux-obsidian flex items-center justify-center gap-2 rounded-xl py-2.5 px-3 text-xs font-bold disabled:opacity-60"
+            >
+              <Download className="h-4 w-4 shrink-0" />
+              <span>{busyReportAction === 'save' ? 'Menyimpan...' : 'Simpan Gambar'}</span>
+            </button>
           </div>
         </div>
 

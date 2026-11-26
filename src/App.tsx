@@ -1,14 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Lock, LockOpen, LogOut, ShieldCheck, X } from 'lucide-react';
 import { ActiveOrderDraft, AppData, Product, SavedQuickCart, ScreenId, Transaction } from './types';
 import {
   EMPTY_DRAFT,
   clearActiveDraft,
+  hashOwnerPasscode,
   loadActiveDraft,
   loadAppData,
   saveActiveDraft,
   saveAppData,
 } from './utils/storage';
 import { Drawer } from './components/Drawer';
+import { useBackClose } from './components/TopBar';
 import { HomeScreen } from './screens/HomeScreen';
 import { PosFlowScreens } from './screens/PosScreens';
 import { InventoryScreens } from './screens/InventoryScreens';
@@ -83,9 +86,23 @@ export default function App() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [lastTx, setLastTx] = useState<Transaction | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [isOwnerLoggedIn, setIsOwnerLoggedIn] = useState(false);
+  const [showOwnerAuthModal, setShowOwnerAuthModal] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinConfirmInput, setPinConfirmInput] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [changingPin, setChangingPin] = useState(false);
 
   const lastNavToHomeAtRef = useRef<number>(0);
   const homeExitTapAtRef = useRef<number>(0);
+
+  useBackClose(showOwnerAuthModal, () => {
+    setShowOwnerAuthModal(false);
+    setPinInput('');
+    setPinConfirmInput('');
+    setAuthError('');
+    setChangingPin(false);
+  });
 
   useEffect(() => {
     saveAppData(data);
@@ -313,6 +330,59 @@ export default function App() {
     return tx;
   };
 
+  const openOwnerAuthModal = () => {
+    setPinInput('');
+    setPinConfirmInput('');
+    setAuthError('');
+    setChangingPin(false);
+    setShowOwnerAuthModal(true);
+  };
+
+  const closeOwnerAuthModal = () => {
+    setShowOwnerAuthModal(false);
+    setPinInput('');
+    setPinConfirmInput('');
+    setAuthError('');
+    setChangingPin(false);
+  };
+
+  const hasOwnerPass = Boolean(data.ownerAuth?.passHash);
+
+  const handleSubmitOwnerAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    const trimmed = pinInput.trim();
+    if (trimmed.length < 4) {
+      setAuthError('PIN / kata sandi minimal 4 karakter atau angka');
+      return;
+    }
+
+    if (!hasOwnerPass || changingPin) {
+      if (trimmed !== pinConfirmInput.trim()) {
+        setAuthError('Konfirmasi PIN / kata sandi tidak cocok');
+        return;
+      }
+      const passHash = hashOwnerPasscode(trimmed);
+      setData((prev) => ({
+        ...prev,
+        ownerAuth: { passHash, updatedAt: Date.now() },
+      }));
+      setIsOwnerLoggedIn(true);
+      closeOwnerAuthModal();
+      notify(hasOwnerPass ? 'PIN / kata sandi pemilik diperbarui' : 'Akun Pemilik aktif! Laba kini ditampilkan.');
+      return;
+    }
+
+    const enteredHash = hashOwnerPasscode(trimmed);
+    if (enteredHash !== data.ownerAuth?.passHash) {
+      setAuthError('PIN / kata sandi pemilik salah');
+      return;
+    }
+    setIsOwnerLoggedIn(true);
+    closeOwnerAuthModal();
+    notify('Berhasil login sebagai Pemilik. Laba ditampilkan.');
+  };
+
   return (
     <AppErrorBoundary>
       <div className="min-h-screen bg-[#F5F6F4] dark:bg-[#0E1418] text-[#17252B] dark:text-[#ECF1EF]">
@@ -323,12 +393,16 @@ export default function App() {
         onNavigate={navigate}
         store={data.store}
         activeUser={activeUser}
+        isOwnerLoggedIn={isOwnerLoggedIn}
+        onOpenOwnerAuth={openOwnerAuthModal}
       />
 
       {screen === 'home' && (
         <HomeScreen
           data={data}
           draft={draft}
+          isOwnerLoggedIn={isOwnerLoggedIn}
+          onOpenOwnerAuth={openOwnerAuthModal}
           onOpenDrawer={() => setDrawerOpen(true)}
           onNavigate={navigate}
         />
@@ -363,6 +437,7 @@ export default function App() {
         <InventoryScreens
           screen={screen}
           data={data}
+          isOwnerLoggedIn={isOwnerLoggedIn}
           editingProduct={editingProduct}
           onBackFromForm={() => setScreen(prevScreen === 'pos' ? 'pos' : 'products')}
           onOpenDrawer={() => setDrawerOpen(true)}
@@ -411,6 +486,7 @@ export default function App() {
         <FinanceScreens
           screen={screen}
           data={data}
+          isOwnerLoggedIn={isOwnerLoggedIn}
           onOpenDrawer={() => setDrawerOpen(true)}
           onNavigate={navigate}
           onOpenReceipt={(tx) => {
@@ -428,11 +504,12 @@ export default function App() {
         screen === 'settings_receipt' ||
         screen === 'settings_printer' ||
         screen === 'settings_users' ||
-        screen === 'settings_store' ||
-        screen === 'settings_backup') && (
+        screen === 'settings_store') && (
         <SettingsScreens
           screen={screen}
           data={data}
+          isOwnerLoggedIn={isOwnerLoggedIn}
+          onOpenOwnerAuth={openOwnerAuthModal}
           onOpenDrawer={() => setDrawerOpen(true)}
           onBack={() =>
             setScreen(
@@ -447,13 +524,154 @@ export default function App() {
         />
       )}
 
-      {screen === 'sync' && (
+      {(screen === 'sync' || screen === 'settings_backup') && (
         <SyncScreen
           data={data}
           onOpenDrawer={() => setDrawerOpen(true)}
           onUpdateData={setData}
+          onFullRestore={(restored) => {
+            setData(restored);
+            setDraft(EMPTY_DRAFT);
+            clearActiveDraft();
+            setLastTx(null);
+          }}
           notify={notify}
         />
+      )}
+
+      {/* Modal Login / Logout Pemilik (Semua data toko tetap utuh saat logout) */}
+      {showOwnerAuthModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/60 backdrop-blur-xs p-4">
+          <div className="surface-card animate-modal-in w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                    isOwnerLoggedIn
+                      ? 'bg-[#165B49]/15 text-[#165B49] dark:text-[#4BB89A]'
+                      : 'bg-[#24343F]/12 text-[#24343F] dark:text-slate-200'
+                  }`}
+                >
+                  {isOwnerLoggedIn ? <ShieldCheck className="h-5 w-5" /> : <Lock className="h-5 w-5" />}
+                </div>
+                <div>
+                  <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white">
+                    {isOwnerLoggedIn && !changingPin
+                      ? 'Akun Pemilik Aktif'
+                      : !hasOwnerPass
+                      ? 'Buat PIN / Sandi Pemilik'
+                      : changingPin
+                      ? 'Ubah PIN / Sandi Pemilik'
+                      : 'Login Pemilik'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {isOwnerLoggedIn && !changingPin
+                      ? 'Laba ditampilkan di semua menu'
+                      : 'Khusus pemilik untuk melihat data laba'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeOwnerAuthModal}
+                className="rounded-xl p-1 text-slate-400 hover:bg-black/5 dark:hover:bg-white/10"
+                aria-label="Tutup"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {isOwnerLoggedIn && !changingPin ? (
+              <div className="space-y-3">
+                <div className="rounded-2xl bg-[#F5F7F4] dark:bg-[#1B262E] p-3.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Saat Anda <b>Logout</b>, tampilan Laba di Produk, Arus Kas, dan Laporan langsung disembunyikan. <b>Semua data toko tetap aman dan tidak terhapus.</b>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOwnerLoggedIn(false);
+                    closeOwnerAuthModal();
+                    notify('Pemilik logout. Data tetap aman & laba disembunyikan.');
+                  }}
+                  className="btn-lux-garnet flex w-full items-center justify-center gap-2 rounded-xl py-3 text-xs font-bold"
+                >
+                  <LogOut className="h-4 w-4" />
+                  <span>Logout Akun Pemilik</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPinInput('');
+                    setPinConfirmInput('');
+                    setAuthError('');
+                    setChangingPin(true);
+                  }}
+                  className="btn-lux-soft flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold"
+                >
+                  <LockOpen className="h-4 w-4" />
+                  <span>Ubah PIN / Kata Sandi Pemilik</span>
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitOwnerAuth} className="space-y-3">
+                {!hasOwnerPass && (
+                  <p className="rounded-xl bg-[#165B49]/10 p-3 text-xs text-[#165B49] dark:text-[#4BB89A] leading-relaxed">
+                    Belum ada PIN/Sandi Pemilik. Buat sekarang (minimal 4 angka atau huruf) agar hanya Pemilik yang dapat membuka tampilan Laba.
+                  </p>
+                )}
+                <div>
+                  <label className="text-xs font-semibold text-slate-500">
+                    {!hasOwnerPass || changingPin ? 'PIN / Kata Sandi Baru' : 'Masukkan PIN / Kata Sandi Pemilik'}
+                  </label>
+                  <input
+                    type="password"
+                    autoFocus
+                    value={pinInput}
+                    onChange={(e) => {
+                      setPinInput(e.target.value);
+                      setAuthError('');
+                    }}
+                    placeholder="Minimal 4 karakter..."
+                    className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-sm font-semibold outline-none focus:border-[#165B49]"
+                  />
+                </div>
+                {(!hasOwnerPass || changingPin) && (
+                  <div>
+                    <label className="text-xs font-semibold text-slate-500">Ulangi PIN / Kata Sandi</label>
+                    <input
+                      type="password"
+                      value={pinConfirmInput}
+                      onChange={(e) => {
+                        setPinConfirmInput(e.target.value);
+                        setAuthError('');
+                      }}
+                      placeholder="Ketik ulang PIN / sandi..."
+                      className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-sm font-semibold outline-none focus:border-[#165B49]"
+                    />
+                  </div>
+                )}
+                {authError && (
+                  <p className="text-xs font-semibold text-[#B54B54]">{authError}</p>
+                )}
+                <div className="flex gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={closeOwnerAuthModal}
+                    className="btn-lux-soft flex-1 rounded-xl py-2.5 text-xs font-bold"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-lux-primary flex-1 rounded-xl py-2.5 text-xs font-bold"
+                  >
+                    {!hasOwnerPass || changingPin ? 'Simpan & Aktifkan' : 'Login Pemilik'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
       )}
 
       {toastMsg && (

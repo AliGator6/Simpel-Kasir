@@ -12,6 +12,9 @@ import {
   Wifi,
   Settings,
   Store,
+  Lock,
+  LockOpen,
+  LogOut,
 } from 'lucide-react';
 import { ScreenId, StoreInfo, UserAccount } from '../types';
 import { SimpelKasirLogo } from './Logo';
@@ -23,6 +26,8 @@ interface DrawerProps {
   onNavigate: (screen: ScreenId) => void;
   store: StoreInfo;
   activeUser: UserAccount;
+  isOwnerLoggedIn: boolean;
+  onOpenOwnerAuth: () => void;
 }
 
 const MENU_ITEMS: { id: ScreenId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -46,6 +51,8 @@ export const Drawer: React.FC<DrawerProps> = ({
   onNavigate,
   store,
   activeUser,
+  isOwnerLoggedIn,
+  onOpenOwnerAuth,
 }) => {
   if (!open) return null;
 
@@ -62,7 +69,9 @@ export const Drawer: React.FC<DrawerProps> = ({
             <SimpelKasirLogo size={46} className="rounded-xl" />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="font-display text-sm font-bold tracking-tight truncate">{activeUser.name}</p>
+            <p className="font-display text-sm font-bold tracking-tight truncate">
+              {isOwnerLoggedIn ? 'Pemilik Toko' : activeUser.name}
+            </p>
             <p className="text-xs text-emerald-100/75 truncate">{store.name}</p>
             <button
               type="button"
@@ -103,6 +112,31 @@ export const Drawer: React.FC<DrawerProps> = ({
             );
           })}
         </nav>
+
+        {/* Footer Akun Pemilik */}
+        <div className="border-t border-[#E2E6E1] dark:border-[#223039] p-3">
+          <button
+            type="button"
+            onClick={() => {
+              onClose();
+              onOpenOwnerAuth();
+            }}
+            className={`w-full flex items-center justify-between gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition ${
+              isOwnerLoggedIn
+                ? 'btn-lux-garnet'
+                : 'btn-lux-obsidian'
+            }`}
+          >
+            <span className="flex items-center gap-2">
+              {isOwnerLoggedIn ? <LogOut className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+              <span>{isOwnerLoggedIn ? 'Logout Pemilik' : 'Login Pemilik'}</span>
+            </span>
+            <span className="flex items-center gap-1 text-[10px] opacity-90">
+              {isOwnerLoggedIn ? <LockOpen className="h-3.5 w-3.5" /> : null}
+              {isOwnerLoggedIn ? 'Aktif' : 'Laba Terkunci'}
+            </span>
+          </button>
+        </div>
       </aside>
     </div>
   );

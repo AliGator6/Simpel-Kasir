@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Lamp,
   Banknote,
@@ -10,6 +10,7 @@ import {
   FileText,
   Printer,
   Database,
+  Lock,
   LockOpen,
   Trash2,
   Moon,
@@ -18,19 +19,15 @@ import {
   CheckCircle2,
   UserPlus,
   Store,
-  Upload,
-  Download,
-  Share2,
-  FileSpreadsheet,
+  ShieldCheck,
 } from 'lucide-react';
 import { AppData, ScreenId } from '../types';
 import { TopBar, SwitchRow, useBackClose } from '../components/TopBar';
 import { NumericInput } from '../components/NumericInput';
-import { DEFAULT_APP_DATA, exportProductsToCsv, parseProductsFromCsv } from '../utils/storage';
+import { DEFAULT_APP_DATA } from '../utils/storage';
 import {
   PairedDevice,
   runTestPrint,
-  saveExportFile,
   scanPairedBluetoothPrinters,
   testBluetoothPrinterConnection,
 } from '../utils/printer';
@@ -42,10 +39,11 @@ interface SettingsProps {
     | 'settings_product'
     | 'settings_receipt'
     | 'settings_printer'
-    | 'settings_backup'
     | 'settings_users'
     | 'settings_store';
   data: AppData;
+  isOwnerLoggedIn: boolean;
+  onOpenOwnerAuth: () => void;
   onOpenDrawer: () => void;
   onBack: () => void;
   onNavigate: (s: ScreenId) => void;
@@ -56,14 +54,14 @@ interface SettingsProps {
 export const SettingsScreens: React.FC<SettingsProps> = ({
   screen,
   data,
+  isOwnerLoggedIn,
+  onOpenOwnerAuth,
   onOpenDrawer,
   onBack,
   onNavigate,
   onUpdateData,
   notify,
 }) => {
-  const backupInputRef = useRef<HTMLInputElement | null>(null);
-  const csvImportRef = useRef<HTMLInputElement | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [scanningPrinter, setScanningPrinter] = useState(false);
   const [connectingAddr, setConnectingAddr] = useState<string | null>(null);
@@ -82,106 +80,6 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   useBackClose(showCurrencyModal, () => setShowCurrencyModal(false));
   useBackClose(showTaxModal, () => setShowTaxModal(false));
   useBackClose(showResetConfirm, () => setShowResetConfirm(false));
-
-  const handleBackupExport = async () => {
-    const json = JSON.stringify(data, null, 2);
-    const fileName = `SimpelKasir_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-    try {
-      const res = await saveExportFile(fileName, json, 'application/json');
-      notify(res.isNative ? `Backup tersimpan di ${res.savedPath}` : 'File backup berhasil diunduh');
-    } catch (err) {
-      notify((err as Error).message || 'Gagal menyimpan file backup');
-    }
-  };
-
-  const handleBackupShare = async () => {
-    const json = JSON.stringify(data, null, 2);
-    const fileName = `SimpelKasir_Backup_${new Date().toISOString().slice(0, 10)}.json`;
-    try {
-      const file = new File([json], fileName, { type: 'application/json' });
-      const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
-      if (typeof navigator.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
-        await navigator.share({
-          title: 'Backup SimpelKasir',
-          text: `Backup data ${data.store.name}`,
-          files: [file],
-        });
-        return;
-      }
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
-    }
-    await handleBackupExport();
-  };
-
-  const handleBackupImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result || '')) as Partial<AppData>;
-        if (!parsed.products || !parsed.store) {
-          notify('Format file backup tidak valid');
-          return;
-        }
-        onUpdateData((prev) => ({
-          ...DEFAULT_APP_DATA,
-          ...prev,
-          ...parsed,
-        }));
-        notify('Data backup berhasil dipulihkan');
-      } catch {
-        notify('Gagal membaca file backup');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  };
-
-  const handleCsvExport = async () => {
-    const csv = exportProductsToCsv(data.products);
-    const safeStore = data.store.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-    try {
-      const res = await saveExportFile(`produk_${safeStore}.csv`, csv, 'text/csv;charset=utf-8;');
-      notify(res.isNative ? `CSV tersimpan di ${res.savedPath}` : 'Data produk diekspor ke CSV');
-    } catch (err) {
-      notify((err as Error).message || 'Gagal mengekspor CSV');
-    }
-  };
-
-  const handleCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const imported = parseProductsFromCsv(String(reader.result || ''));
-      if (imported.length === 0) {
-        notify('File CSV kosong atau format tidak sesuai');
-        return;
-      }
-      onUpdateData((prev) => {
-        const unitSet = new Set(prev.master.units);
-        const catSet = new Set(prev.master.categories);
-        imported.forEach((p) => {
-          if (p.unit) unitSet.add(p.unit);
-          if (p.category) catSet.add(p.category);
-        });
-        return {
-          ...prev,
-          products: imported,
-          master: {
-            ...prev.master,
-            units: Array.from(unitSet),
-            categories: Array.from(catSet),
-          },
-        };
-      });
-      notify(`${imported.length} produk diimpor (menggantikan daftar sebelumnya)`);
-    };
-    reader.readAsText(file, 'UTF-8');
-    e.target.value = '';
-  };
 
   // =========================================================
   // 1. HUB PENGATURAN (GriyoPos 3-Column Grid Layout)
@@ -269,22 +167,16 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
         onClick: () => onNavigate('settings_printer'),
       },
       {
-        label: 'Backup Restore',
+        label: 'Backup & Sinkron',
         icon: <Database className="h-6 w-6" />,
         tone: 'emerald',
-        onClick: () => onNavigate('settings_backup'),
+        onClick: () => onNavigate('sync'),
       },
       {
-        label: 'Login User',
-        icon: <LockOpen className="h-6 w-6" />,
+        label: 'Login Pemilik',
+        icon: isOwnerLoggedIn ? <LockOpen className="h-6 w-6" /> : <Lock className="h-6 w-6" />,
         tone: 'emerald',
         onClick: () => onNavigate('settings_users'),
-      },
-      {
-        label: 'Pulihkan File',
-        icon: <Save className="h-6 w-6" />,
-        tone: 'emerald',
-        onClick: () => backupInputRef.current?.click(),
       },
       {
         label: 'Hapus Data',
@@ -351,13 +243,6 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
               );
             })}
           </div>
-          <input
-            ref={backupInputRef}
-            type="file"
-            accept=".json,application/json,text/plain,application/octet-stream,*/*"
-            className="hidden"
-            onChange={handleBackupImport}
-          />
         </div>
 
         {showCurrencyModal && (
@@ -961,163 +846,99 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
   }
 
   // =========================================================
-  // 5B. BACKUP, RESTORE & MIGRASI CSV
+  // 6. AKUN PEMILIK & NAMA KASIR
   // =========================================================
-  if (screen === 'settings_backup') {
+  if (screen === 'settings_users') {
+    const hasOwnerPass = Boolean(data.ownerAuth?.passHash);
     return (
-      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418] pb-10">
-        <TopBar title="Backup & Restore" mode="back" onLeftClick={onBack} />
+      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418]">
+        <TopBar title="Login Pemilik & Kasir" mode="back" onLeftClick={onBack} />
         <div className="mx-auto w-full max-w-4xl p-4 space-y-4">
-          {/* Card 1: Backup Penuh */}
+          {/* Card Login Pemilik */}
           <div className="surface-card rounded-2xl p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <Database className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
-              <div>
-                <h3 className="font-display text-sm font-bold">Backup Penuh Data Toko (.json)</h3>
-                <p className="text-xs text-slate-500">
-                  Simpan seluruh produk ({data.products.length}), transaksi ({data.transactions.length}), pelanggan, dan pengaturan ke folder Download.
+            <div className="flex items-start gap-3">
+              <div
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                  isOwnerLoggedIn
+                    ? 'bg-[#165B49]/15 text-[#165B49] dark:text-[#4BB89A]'
+                    : 'bg-slate-200/80 dark:bg-[#1B262E] text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                <ShieldCheck className="h-5 w-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-display text-sm font-bold text-[#17252B] dark:text-white">
+                  Akun Pemilik (Khusus Pemilik Toko)
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500 leading-relaxed">
+                  {isOwnerLoggedIn
+                    ? 'Status: Sedang Login. Laba di Produk, Arus Kas, dan Laporan ditampilkan.'
+                    : 'Status: Terkunci / Logout. Laba disembunyikan di seluruh aplikasi. Semua data toko tetap tersimpan aman.'}
                 </p>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={handleBackupExport}
-                className="btn-lux-primary flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
-              >
-                <Download className="h-4 w-4" />
-                Simpan Backup
-              </button>
-              <button
-                type="button"
-                onClick={handleBackupShare}
-                className="btn-lux-gold flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
-              >
-                <Share2 className="h-4 w-4" />
-                Bagikan File
-              </button>
-            </div>
-          </div>
 
-          {/* Card 2: Restore Backup JSON */}
-          <div className="surface-card rounded-2xl p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <Save className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
-              <div>
-                <h3 className="font-display text-sm font-bold">Pulihkan Backup (.json)</h3>
-                <p className="text-xs text-slate-500">
-                  Kembalikan semua data toko dari file backup SimpelKasir sebelumnya.
-                </p>
-              </div>
-            </div>
             <button
               type="button"
-              onClick={() => backupInputRef.current?.click()}
-              className="btn-lux-obsidian flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
+              onClick={onOpenOwnerAuth}
+              className={`w-full rounded-xl py-3 text-xs font-bold flex items-center justify-center gap-2 ${
+                isOwnerLoggedIn ? 'btn-lux-garnet' : 'btn-lux-primary'
+              }`}
             >
-              <Upload className="h-4 w-4" />
-              Pilih File Backup (.json)
+              {isOwnerLoggedIn ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+              <span>
+                {isOwnerLoggedIn
+                  ? 'Kelola PIN / Logout Akun Pemilik'
+                  : hasOwnerPass
+                  ? 'Login Akun Pemilik'
+                  : 'Buat PIN / Sandi Pemilik Pertama Kali'}
+              </span>
             </button>
           </div>
 
-          {/* Card 3: Impor / Ekspor Produk CSV (GriyoPos / Excel) */}
-          <div className="surface-card rounded-2xl p-4 space-y-3">
-            <div className="flex items-center gap-2.5">
-              <FileSpreadsheet className="h-5 w-5 text-[#165B49] dark:text-[#4BB89A]" />
-              <div>
-                <h3 className="font-display text-sm font-bold">Produk CSV (GriyoPos / Excel)</h3>
-                <p className="text-xs text-slate-500">
-                  Mendukung file ekspor CSV dari GriyoPos atau Excel. Saat impor, seluruh daftar produk saat ini akan diganti dengan data dari CSV.
-                </p>
-              </div>
+          {/* Nama Kasir di Struk */}
+          <div className="space-y-2">
+            <p className="px-1 text-xs font-bold uppercase tracking-wider text-slate-500">
+              Nama Petugas di Struk
+            </p>
+            <div className="surface-card rounded-2xl divide-y divide-[#EAECE8] dark:divide-[#223039]">
+              {data.users.map((u) => {
+                const active = u.id === data.activeUserId;
+                return (
+                  <button
+                    key={u.id}
+                    type="button"
+                    onClick={() => {
+                      onUpdateData((p) => ({ ...p, activeUserId: u.id }));
+                      notify(`Nama kasir aktif: ${u.name}`);
+                    }}
+                    className="flex w-full items-center justify-between px-4 py-3.5 text-left"
+                  >
+                    <div>
+                      <p className="text-sm font-bold">{u.name}</p>
+                      <p className="text-xs text-slate-500">{u.role}</p>
+                    </div>
+                    {active && (
+                      <span className="inline-flex items-center gap-1 text-xs font-bold text-[#165B49] dark:text-[#4BB89A]">
+                        <CheckCircle2 className="h-4 w-4" /> Aktif
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
-            <div className="rounded-xl bg-[#F3F5F2] dark:bg-[#1B262E] p-3 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              Tips GriyoPos: di aplikasi GriyoPos pilih <b>Ekspor CSV</b> produk, lalu pilih file <code className="font-mono">.csv</code> hasil ekspornya lewat tombol di bawah.
-            </div>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={() => csvImportRef.current?.click()}
-                className="btn-lux-primary flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
-              >
-                <Upload className="h-4 w-4" />
-                Impor CSV (Ganti Semua)
-              </button>
-              <button
-                type="button"
-                onClick={handleCsvExport}
-                className="btn-lux-soft flex items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-bold"
-              >
-                <Download className="h-4 w-4" />
-                Ekspor Produk (.csv)
-              </button>
-            </div>
-          </div>
-
-          <input
-            ref={backupInputRef}
-            type="file"
-            accept=".json,application/json,text/plain,application/octet-stream,*/*"
-            className="hidden"
-            onChange={handleBackupImport}
-          />
-          <input
-            ref={csvImportRef}
-            type="file"
-            accept=".csv,.txt,text/csv,text/comma-separated-values,text/plain,application/vnd.ms-excel,application/csv,application/octet-stream,*/*"
-            className="hidden"
-            onChange={handleCsvImport}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  // =========================================================
-  // 6. MULTI-USER (Login User)
-  // =========================================================
-  if (screen === 'settings_users') {
-    return (
-      <div className="flex min-h-screen flex-col bg-[#F5F6F4] dark:bg-[#0E1418]">
-        <TopBar title="Login User" mode="back" onLeftClick={onBack} />
-        <div className="mx-auto w-full max-w-4xl p-4 space-y-4">
-          <div className="surface-card rounded-2xl divide-y divide-[#EAECE8] dark:divide-[#223039]">
-            {data.users.map((u) => {
-              const active = u.id === data.activeUserId;
-              return (
-                <button
-                  key={u.id}
-                  type="button"
-                  onClick={() => {
-                    onUpdateData((p) => ({ ...p, activeUserId: u.id }));
-                    notify(`Aktif sebagai ${u.name} (${u.role})`);
-                  }}
-                  className="flex w-full items-center justify-between px-4 py-3.5 text-left"
-                >
-                  <div>
-                    <p className="text-sm font-bold">{u.name}</p>
-                    <p className="text-xs text-slate-500">{u.role}</p>
-                  </div>
-                  {active && (
-                    <span className="inline-flex items-center gap-1 text-xs font-bold text-[#165B49] dark:text-[#4BB89A]">
-                      <CheckCircle2 className="h-4 w-4" /> Aktif
-                    </span>
-                  )}
-                </button>
-              );
-            })}
           </div>
 
           <div className="surface-card rounded-2xl p-4">
             <h3 className="font-display text-sm font-bold flex items-center gap-2">
-              <UserPlus className="h-4 w-4 text-[#165B49] dark:text-[#4BB89A]" /> Tambah Pengguna Baru
+              <UserPlus className="h-4 w-4 text-[#165B49] dark:text-[#4BB89A]" /> Tambah Nama Kasir
             </h3>
             <div className="mt-3 flex gap-2">
               <input
                 type="text"
                 value={newUserName}
                 onChange={(e) => setNewUserName(e.target.value)}
-                placeholder="Nama kasir / admin"
+                placeholder="Nama kasir"
                 className="flex-1 rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-sm outline-none focus:border-[#165B49]"
               />
               <select
@@ -1126,7 +947,7 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
                 className="rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-white dark:bg-[#0E1418] px-3 py-2 text-sm"
               >
                 <option value="Kasir">Kasir</option>
-                <option value="Admin">Admin</option>
+                <option value="Admin">Pemilik</option>
               </select>
             </div>
             <button
@@ -1138,11 +959,11 @@ export const SettingsScreens: React.FC<SettingsProps> = ({
                   users: [...p.users, { id: `usr-${Date.now()}`, name: newUserName.trim(), role: newUserRole, pin: '' }],
                 }));
                 setNewUserName('');
-                notify('User ditambahkan');
+                notify('Nama petugas ditambahkan');
               }}
               className="btn-lux-primary mt-3 w-full rounded-xl py-2.5 text-sm font-bold"
             >
-              Tambah User
+              Simpan Nama
             </button>
           </div>
         </div>

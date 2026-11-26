@@ -16,6 +16,8 @@ import {
   Store,
   ChevronRight,
   X,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 import { ActiveOrderDraft, AppData, ScreenId } from '../types';
 import { TopBar, useBackClose } from '../components/TopBar';
@@ -25,11 +27,20 @@ import { formatMoney, toDateKey } from '../utils/storage';
 interface HomeScreenProps {
   data: AppData;
   draft: ActiveOrderDraft;
+  isOwnerLoggedIn: boolean;
+  onOpenOwnerAuth: () => void;
   onOpenDrawer: () => void;
   onNavigate: (screen: ScreenId) => void;
 }
 
-export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawer, onNavigate }) => {
+export const HomeScreen: React.FC<HomeScreenProps> = ({
+  data,
+  draft,
+  isOwnerLoggedIn,
+  onOpenOwnerAuth,
+  onOpenDrawer,
+  onNavigate,
+}) => {
   const [showHelp, setShowHelp] = useState(false);
   useBackClose(showHelp, () => setShowHelp(false));
 
@@ -77,9 +88,13 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
           <>
             <button
               type="button"
-              onClick={() => onNavigate('settings_users')}
-              className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/5 hover:bg-white/15 active:scale-95 transition"
-              aria-label="Profil Pengguna"
+              onClick={onOpenOwnerAuth}
+              className={`flex h-10 w-10 items-center justify-center rounded-xl active:scale-95 transition ${
+                isOwnerLoggedIn
+                  ? 'bg-[#2CA585]/25 text-[#7AE8CA] hover:bg-[#2CA585]/35'
+                  : 'bg-white/5 hover:bg-white/15'
+              }`}
+              aria-label={isOwnerLoggedIn ? 'Akun Pemilik Aktif' : 'Login Pemilik'}
             >
               <User className="h-5 w-5" />
             </button>
@@ -104,7 +119,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
       />
 
       <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 pb-8 pt-4">
-        {/* Top Store Chip + Active User */}
+        {/* Top Store Chip + Owner Auth Status */}
         <div className="flex items-center justify-between gap-2">
           <button
             type="button"
@@ -114,9 +129,18 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
             <Store className="h-3.5 w-3.5" />
             <span className="truncate max-w-[180px]">{data.store.name}</span>
           </button>
-          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            {activeUser.name} · {activeUser.role}
-          </span>
+          <button
+            type="button"
+            onClick={onOpenOwnerAuth}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+              isOwnerLoggedIn
+                ? 'bg-[#165B49]/12 text-[#165B49] dark:text-[#4BB89A]'
+                : 'bg-slate-200/70 dark:bg-[#1B262E] text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {isOwnerLoggedIn ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+            <span>{isOwnerLoggedIn ? 'Pemilik · Logout' : `Login Pemilik (${activeUser.name})`}</span>
+          </button>
         </div>
 
         {/* Active Draft Recovery / Resume Card (When Cart Has Saved Items) */}
@@ -247,10 +271,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
             <div>
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-                  Penjualan 7 Hari Terakhir
-                </span>
-                <span className="font-display text-sm font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
-                  {formatMoney(chartDays.reduce((a, b) => a + b.total, 0), data.currencySymbol)}
+                  Grafik Penjualan 7 Hari Terakhir
                 </span>
               </div>
               <div className="flex h-32 items-end gap-2 pt-2">
@@ -261,7 +282,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({ data, draft, onOpenDrawe
                       <div
                         className="w-full max-w-[34px] rounded-t-lg bg-gradient-to-t from-[#165B49] to-[#27856D] dark:from-[#1D735D] dark:to-[#3EB494] transition-all"
                         style={{ height: `${d.total > 0 ? pct : 4}%`, opacity: d.total > 0 ? 1 : 0.2 }}
-                        title={`${d.label}: ${formatMoney(d.total, data.currencySymbol)}`}
                       />
                       <span className="text-[10px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
                         {d.label}

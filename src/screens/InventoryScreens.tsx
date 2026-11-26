@@ -34,6 +34,7 @@ import { saveExportFile } from '../utils/printer';
 interface InventoryProps {
   screen: 'products' | 'product_form' | 'quick_tx' | 'customers' | 'master' | 'catalog';
   data: AppData;
+  isOwnerLoggedIn: boolean;
   editingProduct: Product | null;
   onBackFromForm: () => void;
   onOpenDrawer: () => void;
@@ -48,6 +49,7 @@ interface InventoryProps {
 export const InventoryScreens: React.FC<InventoryProps> = ({
   screen,
   data,
+  isOwnerLoggedIn,
   editingProduct,
   onBackFromForm,
   onOpenDrawer,
@@ -327,9 +329,11 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                   <p className="font-display text-[16px] font-bold text-[#165B49] dark:text-[#4BB89A]">
                     {formatMoney(p.sellPrice, data.currencySymbol)}
                   </p>
-                  <p className="text-xs text-[#8C6A2E] dark:text-[#D5B26E]">
-                    Laba: {formatMoney(profit, data.currencySymbol)}
-                  </p>
+                  {isOwnerLoggedIn && (
+                    <p className="text-xs text-[#8C6A2E] dark:text-[#D5B26E]">
+                      Laba: {formatMoney(profit, data.currencySymbol)}
+                    </p>
+                  )}
                 </div>
               </button>
             );
@@ -483,9 +487,9 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
             </div>
           </div>
 
-          {/* Harga Jual + Laba (2 kolom) */}
+          {/* Harga Jual + Laba (Laba hanya tampil jika pemilik login) */}
           <div className="grid grid-cols-5">
-            <div className="col-span-3 flex items-center gap-3.5 px-4 py-3">
+            <div className={`${isOwnerLoggedIn ? 'col-span-3' : 'col-span-5'} flex items-center gap-3.5 px-4 py-3`}>
               <Banknote className="h-5 w-5 shrink-0 text-[#165B49] dark:text-[#4BB89A]" />
               <div className="flex-1">
                 <label className="block text-xs text-slate-500">Harga Jual</label>
@@ -497,15 +501,17 @@ export const InventoryScreens: React.FC<InventoryProps> = ({
                 />
               </div>
             </div>
-            <div className="col-span-2 flex items-center gap-3 bg-[#F3F5F2] dark:bg-[#1B262E] px-4 py-3">
-              <CircleDollarSign className="h-5 w-5 shrink-0 text-[#8C6A2E] dark:text-[#D5B26E]" />
-              <div className="min-w-0">
-                <span className="block text-xs text-slate-500">Laba</span>
-                <span className="font-display block text-base font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A] truncate">
-                  {profit}
-                </span>
+            {isOwnerLoggedIn && (
+              <div className="col-span-2 flex items-center gap-3 bg-[#F3F5F2] dark:bg-[#1B262E] px-4 py-3">
+                <CircleDollarSign className="h-5 w-5 shrink-0 text-[#8C6A2E] dark:text-[#D5B26E]" />
+                <div className="min-w-0">
+                  <span className="block text-xs text-slate-500">Laba</span>
+                  <span className="font-display block text-base font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A] truncate">
+                    {profit}
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Checkbox Harga bisa diganti */}

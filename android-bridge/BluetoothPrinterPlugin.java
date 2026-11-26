@@ -136,6 +136,7 @@ public class BluetoothPrinterPlugin extends Plugin {
     private String wifiHostedFileName = "Products_SimpelKasir.csv";
     private String wifiHostedStoreName = "SimpelKasir";
     private int wifiHostedProductCount = 0;
+    private String wifiHostedDataType = "products_csv";
 
     @Override
     public void load() {
@@ -620,13 +621,16 @@ public class BluetoothPrinterPlugin extends Plugin {
         String content = call.getString("content");
         String mimeType = call.getString("mimeType", "application/octet-stream");
         String subFolder = call.getString("subFolder", "");
+        boolean isBase64 = Boolean.TRUE.equals(call.getBoolean("isBase64", false));
         if (fileName == null || fileName.isEmpty() || content == null) {
             call.reject("Nama file atau isi kosong.");
             return;
         }
         executor.execute(() -> {
             try {
-                byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
+                byte[] bytes = isBase64
+                    ? Base64.decode(content, Base64.DEFAULT)
+                    : content.getBytes(StandardCharsets.UTF_8);
                 String savedPath = writeBytesToDownloads(fileName, bytes, mimeType, subFolder);
                 JSObject ok = new JSObject();
                 ok.put("ok", true);
@@ -634,6 +638,64 @@ public class BluetoothPrinterPlugin extends Plugin {
                 call.resolve(ok);
             } catch (Exception e) {
                 call.reject("Gagal menyimpan ke folder Download: " + e.getMessage());
+            }
+        });
+    }
+
+    @PluginMethod
+    public void shareImageFile(PluginCall call) {
+        String fileName = sanitizeFileName(call.getString("fileName", "Laporan_SimpelKasir.png"), "Laporan_SimpelKasir.png");
+        String base64 = call.getString("base64");
+        String text = call.getString("text", "");
+        if (base64 == null || base64.isEmpty()) {
+            call.reject("Data gambar kosong.");
+            return;
+        }
+
+        executor.execute(() -> {
+            try {
+                byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
+                ContentResolver resolver = getContext().getContentResolver();
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/SimpelKasir");
+                    values.put(MediaStore.Images.Media.IS_PENDING, 1);
+                }
+                Uri imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (imageUri == null) {
+                    throw new IOException("Gagal menyiapkan gambar untuk dibagikan.");
+                }
+                try (OutputStream os = resolver.openOutputStream(imageUri)) {
+                    if (os == null) throw new IOException("Stream gambar null.");
+                    os.write(bytes);
+                    os.flush();
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues done = new ContentValues();
+                    done.put(MediaStore.Images.Media.IS_PENDING, 0);
+                    resolver.update(imageUri, done, null, null);
+                }
+
+                Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                shareIntent.setType("image/png");
+                shareIntent.putExtra(Intent.EXTRA_STREAM, imageUri);
+                if (text != null && !text.isEmpty()) {
+                    shareIntent.putExtra(Intent.EXTRA_TEXT, text);
+                }
+                shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                Intent chooser = Intent.createChooser(shareIntent, "Kirim Gambar Laporan ke WhatsApp");
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(chooser);
+
+                JSObject ok = new JSObject();
+                ok.put("ok", true);
+                ok.put("uri", imageUri.toString());
+                call.resolve(ok);
+            } catch (Exception e) {
+                call.reject("Gagal membagikan gambar: " + e.getMessage());
             }
         });
     }
@@ -826,9 +888,12 @@ public class BluetoothPrinterPlugin extends Plugin {
             OutputStream os = client.getOutputStream();
             if ("/products.csv".equals(path) || "/download".equals(path)) {
                 byte[] body = wifiHostedCsvBytes;
+                String contentType = wifiHostedFileName.toLowerCase(Locale.ROOT).endsWith(".json")
+                    ? "application/json; charset=utf-8"
+                    : "text/csv; charset=utf-8";
                 String headers =
                     "HTTP/1.1 200 OK\r\n" +
-                    "Content-Type: text/csv; charset=utf-8\r\n" +
+                    "Content-Type: " + contentType + "\r\n" +
                     "Content-Disposition: attachment; filename=\"" + wifiHostedFileName + "\"\r\n" +
                     "Content-Length: " + body.length + "\r\n" +
                     "Access-Control-Allow-Origin: *\r\n" +
@@ -848,6 +913,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                 info.put("deviceName", Build.MODEL != null ? Build.MODEL : "Android");
                 info.put("productCount", wifiHostedProductCount);
                 info.put("fileName", wifiHostedFileName);
+                info.put("dataType", wifiHostedDataType);
                 info.put("port", wifiHttpPort);
                 byte[] body = info.toString().getBytes(StandardCharsets.UTF_8);
                 String headers =
@@ -862,9 +928,9 @@ public class BluetoothPrinterPlugin extends Plugin {
             } else {
                 String html = "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>SimpelKasir Sync</title></head>"
                     + "<body style='font-family:sans-serif;padding:24px;text-align:center'>"
-                    + "<h2>SimpelKasir - Sinkron CSV</h2>"
-                    + "<p>" + wifiHostedProductCount + " produk siap diunduh dari <b>" + wifiHostedStoreName + "</b></p>"
-                    + "<p><a href='/products.csv' style='display:inline-block;padding:12px 20px;background:#165B49;color:#fff;text-decoration:none;border-radius:10px;font-weight:bold'>Download " + wifiHostedFileName + "</a></p>"
+                    + "<h2>SimpelKasir - Sinkron Data</h2>"
+                    + "<p>Data siap diunduh dari <b>" + wifiHostedStoreName + "</b></p>"
+                    + "<p><a href='/download' style='display:inline-block;padding:12px 20px;background:#165B49;color:#fff;text-decoration:none;border-radius:10px;font-weight:bold'>Download " + wifiHostedFileName + "</a></p>"
                     + "</body></html>";
                 byte[] body = html.getBytes(StandardCharsets.UTF_8);
                 String headers =
@@ -890,9 +956,10 @@ public class BluetoothPrinterPlugin extends Plugin {
         String fileName = sanitizeFileName(call.getString("fileName", "Products_SimpelKasir.csv"), "Products_SimpelKasir.csv");
         String storeName = call.getString("storeName", "SimpelKasir");
         int productCount = call.getInt("productCount", 0);
+        String dataType = call.getString("dataType", "products_csv");
 
         if (content == null || content.isEmpty()) {
-            call.reject("Data produk CSV kosong.");
+            call.reject("Data yang akan dikirim kosong.");
             return;
         }
 
@@ -932,6 +999,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                 wifiHostedFileName = fileName;
                 wifiHostedStoreName = storeName != null ? storeName : "SimpelKasir";
                 wifiHostedProductCount = productCount;
+                wifiHostedDataType = (dataType != null && !dataType.isEmpty()) ? dataType : "products_csv";
                 wifiHttpServer = openedHttp;
                 wifiHttpPort = chosenPort;
                 wifiServerRunning = true;
@@ -980,6 +1048,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                                     resp.put("deviceName", Build.MODEL != null ? Build.MODEL : "Android");
                                     resp.put("productCount", wifiHostedProductCount);
                                     resp.put("fileName", wifiHostedFileName);
+                                    resp.put("dataType", wifiHostedDataType);
                                     byte[] respBytes = resp.toString().getBytes(StandardCharsets.UTF_8);
                                     DatagramPacket reply = new DatagramPacket(
                                         respBytes,
@@ -1010,6 +1079,7 @@ public class BluetoothPrinterPlugin extends Plugin {
             ret.put("deviceName", Build.MODEL != null ? Build.MODEL : "Android");
             ret.put("fileName", fileName);
             ret.put("productCount", productCount);
+            ret.put("dataType", wifiHostedDataType);
             call.resolve(ret);
         });
     }
@@ -1044,6 +1114,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                         peer.put("deviceName", json.optString("deviceName", "Android"));
                         peer.put("productCount", json.optInt("productCount", 0));
                         peer.put("fileName", json.optString("fileName", "Products_SimpelKasir.csv"));
+                        peer.put("dataType", json.optString("dataType", "products_csv"));
                         return peer;
                     }
                 }
@@ -1159,6 +1230,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                                     peer.put("deviceName", json.optString("deviceName", "Android"));
                                     peer.put("productCount", json.optInt("productCount", 0));
                                     peer.put("fileName", json.optString("fileName", "Products_SimpelKasir.csv"));
+                                    peer.put("dataType", json.optString("dataType", "products_csv"));
                                     found.put(key, peer);
                                 }
                             } catch (SocketTimeoutException ignored) {
@@ -1223,6 +1295,7 @@ public class BluetoothPrinterPlugin extends Plugin {
 
             String storeName = "SimpelKasir";
             String remoteFileName = "";
+            String dataType = "products_csv";
             try {
                 HttpURLConnection infoConn = (HttpURLConnection) new URL(baseUrl + "/info").openConnection();
                 infoConn.setConnectTimeout(3000);
@@ -1237,6 +1310,7 @@ public class BluetoothPrinterPlugin extends Plugin {
                         JSONObject info = new JSONObject(bos.toString(StandardCharsets.UTF_8.name()));
                         storeName = info.optString("storeName", storeName);
                         remoteFileName = info.optString("fileName", "");
+                        dataType = info.optString("dataType", "products_csv");
                     }
                 }
                 infoConn.disconnect();
@@ -1244,7 +1318,7 @@ public class BluetoothPrinterPlugin extends Plugin {
 
             HttpURLConnection conn = null;
             try {
-                conn = (HttpURLConnection) new URL(baseUrl + "/products.csv").openConnection();
+                conn = (HttpURLConnection) new URL(baseUrl + "/download").openConnection();
                 conn.setConnectTimeout(5000);
                 conn.setReadTimeout(20000);
                 conn.setRequestProperty("Connection", "close");
@@ -1268,24 +1342,38 @@ public class BluetoothPrinterPlugin extends Plugin {
                     csvContent = csvContent.substring(1);
                 }
                 if (csvContent.trim().isEmpty()) {
-                    throw new IOException("File CSV yang diterima kosong.");
+                    throw new IOException("File yang diterima kosong.");
                 }
 
                 String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-                String defaultName = "Products_SimpelKasir_" + stamp + ".csv";
+                boolean wantsJson = (remoteFileName != null && remoteFileName.toLowerCase(Locale.ROOT).endsWith(".json"))
+                    || (overrideFileName != null && overrideFileName.toLowerCase(Locale.ROOT).endsWith(".json"))
+                    || "full_backup".equals(dataType)
+                    || "customers_json".equals(dataType)
+                    || "quick_carts".equals(dataType)
+                    || "transactions_cashflow".equals(dataType)
+                    || "master_settings".equals(dataType)
+                    || csvContent.trim().startsWith("{");
+                String defaultName = wantsJson
+                    ? ("SimpelKasir_Data_" + stamp + ".json")
+                    : ("Products_SimpelKasir_" + stamp + ".csv");
                 String chosenName = (overrideFileName != null && !overrideFileName.trim().isEmpty())
                     ? overrideFileName.trim()
                     : (!remoteFileName.isEmpty() ? remoteFileName : defaultName);
                 chosenName = sanitizeFileName(chosenName, defaultName);
-                if (!chosenName.toLowerCase(Locale.ROOT).endsWith(".csv")) {
-                    chosenName = chosenName + ".csv";
+                String lowerChosen = chosenName.toLowerCase(Locale.ROOT);
+                if (!lowerChosen.endsWith(".csv") && !lowerChosen.endsWith(".json")) {
+                    chosenName = chosenName + (wantsJson ? ".json" : ".csv");
                 }
+                String saveMime = chosenName.toLowerCase(Locale.ROOT).endsWith(".json")
+                    ? "application/json"
+                    : "text/csv";
 
                 String savedPath = "";
                 String saveWarning = "";
                 if (saveToSimpelKasir) {
                     try {
-                        savedPath = writeBytesToDownloads(chosenName, csvBytes, "text/csv", "SimpelKasir");
+                        savedPath = writeBytesToDownloads(chosenName, csvBytes, saveMime, "SimpelKasir");
                     } catch (Exception saveErr) {
                         saveWarning = saveErr.getMessage() != null ? saveErr.getMessage() : "Gagal tulis ke Download";
                         try {
@@ -1310,12 +1398,13 @@ public class BluetoothPrinterPlugin extends Plugin {
                 res.put("fileName", chosenName);
                 res.put("savedPath", savedPath);
                 res.put("storeName", storeName);
+                res.put("dataType", dataType);
                 if (!saveWarning.isEmpty()) {
                     res.put("saveWarning", saveWarning);
                 }
                 call.resolve(res);
             } catch (Exception e) {
-                call.reject("Gagal menerima CSV dari " + base + " (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "). Pastikan ke-2 HP di WiFi/Hotspot sama dan halaman Kirim CSV masih terbuka.");
+                call.reject("Gagal menerima data dari " + base + " (" + e.getClass().getSimpleName() + ": " + e.getMessage() + "). Pastikan ke-2 HP di WiFi/Hotspot sama dan mode Kirim masih terbuka.");
             } finally {
                 if (conn != null) conn.disconnect();
             }

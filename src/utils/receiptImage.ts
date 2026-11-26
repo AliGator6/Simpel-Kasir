@@ -12,6 +12,7 @@ export function renderReceiptToCanvas(
   const money = (v: number) =>
     formatMoney(v, cfg.showCurrency ? currencySymbol : '', cfg.currencySpace, cfg.currencyRight);
 
+  // Measure lines first
   const lines: { type: 'gap' | 'dash' | 'item' | 'sub' | 'kv' | 'center' | 'note'; left?: string; right?: string; bold?: boolean; size?: number }[] = [];
 
   lines.push({ type: 'center', left: store.name, bold: true, size: cfg.largeStoreName ? 32 : 26 });
@@ -25,7 +26,9 @@ export function renderReceiptToCanvas(
   if (tx.customerName && tx.customerName !== 'Umum') {
     lines.push({ type: 'kv', left: 'Pelanggan', right: tx.customerName, bold: cfg.largeCustomer, size: cfg.largeCustomer ? 23 : 19 });
   }
-  if (cfg.showCashier) lines.push({ type: 'kv', left: 'Kasir', right: tx.cashierName, size: 18 });
+  if (cfg.showCashier) {
+    lines.push({ type: 'kv', left: 'Kasir', right: tx.cashierName, size: 18 });
+  }
   lines.push({ type: 'dash' });
 
   tx.items.forEach((item, idx) => {
@@ -34,8 +37,12 @@ export function renderReceiptToCanvas(
     const qtyLabel = `${item.qty}${cfg.showUnit === 'all' ? (cfg.unitSpace ? ` ${item.unit}` : item.unit) : ''}x ${formatNumber(item.unitPrice)}`;
     const sub = item.unitPrice * item.qty - item.discount;
     lines.push({ type: 'sub', left: qtyLabel, right: formatNumber(sub), size: cfg.largeItemPrice ? 23 : 19 });
-    if (item.discount > 0) lines.push({ type: 'sub', left: 'Diskon', right: `-${formatNumber(item.discount)}`, size: 17 });
-    if (item.note) lines.push({ type: 'note', left: `  Catatan: ${item.note}`, size: 17 });
+    if (item.discount > 0) {
+      lines.push({ type: 'sub', left: 'Diskon', right: `-${formatNumber(item.discount)}`, size: 17 });
+    }
+    if (item.note) {
+      lines.push({ type: 'note', left: `  Catatan: ${item.note}`, size: 17 });
+    }
   });
 
   lines.push({ type: 'dash' });
@@ -44,10 +51,20 @@ export function renderReceiptToCanvas(
     if (tx.discount > 0) lines.push({ type: 'kv', left: 'Diskon Nota', right: `-${money(tx.discount)}`, size: 19 });
     if (tx.tax > 0) lines.push({ type: 'kv', left: 'Pajak', right: money(tx.tax), size: 19 });
     if (tx.shipping > 0) lines.push({ type: 'kv', left: 'Ongkir', right: money(tx.shipping), size: 19 });
+
     lines.push({ type: 'kv', left: 'Total', right: money(tx.total), bold: true, size: cfg.largeTotal ? 28 : 22 });
     if (tx.paidAmount > 0) {
-      lines.push({ type: 'kv', left: tx.paymentMethod === 'non_tunai' ? 'Non Tunai' : 'Tunai', right: money(tx.paidAmount), size: cfg.largePayment ? 24 : 20 });
-      lines.push({ type: 'kv', left: tx.changeAmount >= 0 ? 'Kembali' : 'Kurang', right: money(Math.abs(tx.changeAmount)), size: cfg.largeChange ? 24 : 20 });
+      lines.push({
+        type: 'kv',
+        left: tx.paymentMethod === 'non_tunai' ? 'Non Tunai' : 'Tunai',
+        right: money(tx.paidAmount),
+        size: cfg.largePayment ? 24 : 20,
+      });
+      if (tx.changeAmount >= 0) {
+        lines.push({ type: 'kv', left: 'Kembali', right: money(tx.changeAmount), size: cfg.largeChange ? 24 : 20 });
+      } else {
+        lines.push({ type: 'kv', left: 'Kurang', right: money(Math.abs(tx.changeAmount)), size: cfg.largeChange ? 24 : 20 });
+      }
     } else if (cfg.showUnpaidStatus) {
       lines.push({ type: 'kv', left: 'Status', right: 'Belum Dibayar', bold: true, size: cfg.largeStatus ? 24 : 20 });
     }
@@ -62,8 +79,11 @@ export function renderReceiptToCanvas(
   }
 
   lines.push({ type: 'gap' });
-  if (store.footer) lines.push({ type: cfg.centerFooter ? 'center' : 'note', left: store.footer, size: 20 });
+  if (store.footer) {
+    lines.push({ type: cfg.centerFooter ? 'center' : 'note', left: store.footer, size: 20 });
+  }
 
+  // Estimate height
   let totalHeight = pad * 2;
   lines.forEach((l) => {
     if (l.type === 'gap') totalHeight += 18;
@@ -83,9 +103,12 @@ export function renderReceiptToCanvas(
 
   lines.forEach((l) => {
     const size = l.size || 20;
-    ctx.font = `${l.bold ? '700' : '400'} ${size}px "Plus Jakarta Sans", Arial, sans-serif`;
-    if (l.type === 'gap') y += 18;
-    else if (l.type === 'dash') {
+    const fontWeight = l.bold ? '700' : '400';
+    ctx.font = `${fontWeight} ${size}px "Plus Jakarta Sans", Arial, sans-serif`;
+
+    if (l.type === 'gap') {
+      y += 18;
+    } else if (l.type === 'dash') {
       ctx.strokeStyle = '#374151';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
@@ -148,9 +171,14 @@ export async function shareReceiptWhatsApp(
       share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>;
     };
     if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
-      await nav.share({ files: [file], title: `Struk #${tx.receiptNo} - ${store.name}`, text: captionLines.join('\n') });
+      await nav.share({
+        files: [file],
+        title: `Struk #${tx.receiptNo} - ${store.name}`,
+        text: captionLines.join('\n'),
+      });
       return 'shared_image';
     }
+    // Download image receipt so user can attach directly to WhatsApp if Web Share files unsupported
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -158,5 +186,124 @@ export async function shareReceiptWhatsApp(
     a.click();
     URL.revokeObjectURL(url);
   }
+
   return captionLines.join('\n');
+}
+
+export function renderDailyReportToCanvas(
+  dateLabel: string,
+  transactions: Transaction[],
+  store: StoreInfo,
+  cfg: ReceiptSettings,
+  currencySymbol: string
+): HTMLCanvasElement {
+  const width = 560;
+  const pad = 34;
+  const sorted = [...transactions].sort((a, b) => a.receiptNo - b.receiptNo || a.createdAt - b.createdAt);
+  const grandTotal = sorted.reduce((acc, tx) => acc + tx.total, 0);
+  const money = (v: number) =>
+    formatMoney(v, cfg.showCurrency ? currencySymbol : '', cfg.currencySpace, cfg.currencyRight);
+
+  const rowHeight = 34;
+  const headerHeight = 162;
+  const tableRowsHeight = Math.max(1, sorted.length) * rowHeight;
+  const footerHeight = 128;
+  const totalHeight = headerHeight + tableRowsHeight + footerHeight;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = totalHeight;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, width, totalHeight);
+
+  let y = 44;
+  ctx.fillStyle = '#111827';
+  ctx.textAlign = 'center';
+  ctx.font = '700 26px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.fillText(store.name || 'SimpelKasir', width / 2, y);
+
+  y += 30;
+  ctx.font = '700 20px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.fillStyle = '#165B49';
+  ctx.fillText('LAPORAN PENJUALAN HARIAN', width / 2, y);
+
+  y += 26;
+  ctx.font = '500 18px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.fillStyle = '#4B5563';
+  ctx.fillText(`Tanggal: ${dateLabel}`, width / 2, y);
+
+  y += 24;
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad, y);
+  ctx.lineTo(width - pad, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  y += 26;
+  ctx.fillStyle = '#374151';
+  ctx.font = '700 18px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('No. Transaksi', pad, y);
+  ctx.textAlign = 'right';
+  ctx.fillText('Total Harga', width - pad, y);
+
+  y += 14;
+  ctx.strokeStyle = '#9CA3AF';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad, y);
+  ctx.lineTo(width - pad, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  y += 28;
+  ctx.font = '600 20px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.fillStyle = '#111827';
+  if (sorted.length === 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#6B7280';
+    ctx.fillText('Belum ada transaksi pada tanggal ini', width / 2, y);
+    y += rowHeight;
+  } else {
+    sorted.forEach((tx) => {
+      ctx.textAlign = 'left';
+      ctx.fillText(`#${tx.receiptNo}`, pad, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(money(tx.total), width - pad, y);
+      y += rowHeight;
+    });
+  }
+
+  y += 4;
+  ctx.strokeStyle = '#374151';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pad, y);
+  ctx.lineTo(width - pad, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  y += 30;
+  ctx.fillStyle = '#374151';
+  ctx.font = '600 19px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Jumlah Transaksi', pad, y);
+  ctx.textAlign = 'right';
+  ctx.fillText(`${sorted.length} transaksi`, width - pad, y);
+
+  y += 32;
+  ctx.fillStyle = '#165B49';
+  ctx.font = '700 23px "Plus Jakarta Sans", Arial, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Total Penjualan', pad, y);
+  ctx.textAlign = 'right';
+  ctx.fillText(money(grandTotal), width - pad, y);
+
+  return canvas;
 }
