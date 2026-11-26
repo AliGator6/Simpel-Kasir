@@ -76,6 +76,53 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
   const [reportDateKey, setReportDateKey] = useState<string>(() => toDateKey(Date.now()));
   const [busyReportAction, setBusyReportAction] = useState<'print' | 'wa' | 'save' | null>(null);
 
+  // Unconditional report memos (must stay above any conditional return to satisfy Rules of Hooks)
+  const now = new Date();
+  const todayKey = toDateKey(now.getTime());
+  const monthPrefix = todayKey.slice(0, 7);
+
+  const scopedTx = useMemo(
+    () =>
+      data.transactions.filter((t) => {
+        if (reportRange === 'today') return toDateKey(t.createdAt) === todayKey;
+        if (reportRange === 'month') return toDateKey(t.createdAt).startsWith(monthPrefix);
+        return true;
+      }),
+    [data.transactions, reportRange, todayKey, monthPrefix]
+  );
+
+  const scopedExpenses = useMemo(
+    () =>
+      data.cashflows.filter((c) => {
+        if (c.kind !== 'expense_profit') return false;
+        if (reportRange === 'today') return toDateKey(c.createdAt) === todayKey;
+        if (reportRange === 'month') return toDateKey(c.createdAt).startsWith(monthPrefix);
+        return true;
+      }),
+    [data.cashflows, reportRange, todayKey, monthPrefix]
+  );
+
+  const topProducts = useMemo(() => {
+    const map = new Map<string, { name: string; qty: number; revenue: number }>();
+    scopedTx.forEach((t) => {
+      t.items.forEach((i) => {
+        const cur = map.get(i.productId) || { name: i.name, qty: 0, revenue: 0 };
+        cur.qty += i.qty;
+        cur.revenue += i.unitPrice * i.qty - i.discount;
+        map.set(i.productId, cur);
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => b.qty - a.qty).slice(0, 5);
+  }, [scopedTx]);
+
+  const dailyReportTx = useMemo(
+    () =>
+      data.transactions
+        .filter((t) => toDateKey(t.createdAt) === reportDateKey)
+        .sort((a, b) => a.receiptNo - b.receiptNo || a.createdAt - b.createdAt),
+    [data.transactions, reportDateKey]
+  );
+
   // =========================================================
   // 1. DAFTAR TRANSAKSI
   // =========================================================
@@ -790,31 +837,6 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
   // =========================================================
   // 4. LAPORAN (Reports)
   // =========================================================
-  const now = new Date();
-  const todayKey = toDateKey(now.getTime());
-  const monthPrefix = todayKey.slice(0, 7);
-
-  const scopedTx = useMemo(
-    () =>
-      data.transactions.filter((t) => {
-        if (reportRange === 'today') return toDateKey(t.createdAt) === todayKey;
-        if (reportRange === 'month') return toDateKey(t.createdAt).startsWith(monthPrefix);
-        return true;
-      }),
-    [data.transactions, reportRange, todayKey, monthPrefix]
-  );
-
-  const scopedExpenses = useMemo(
-    () =>
-      data.cashflows.filter((c) => {
-        if (c.kind !== 'expense_profit') return false;
-        if (reportRange === 'today') return toDateKey(c.createdAt) === todayKey;
-        if (reportRange === 'month') return toDateKey(c.createdAt).startsWith(monthPrefix);
-        return true;
-      }),
-    [data.cashflows, reportRange, todayKey, monthPrefix]
-  );
-
   const totalSales = scopedTx.reduce((a, t) => a + t.total, 0);
   const grossProfit = scopedTx.reduce((a, t) => a + t.totalProfit, 0);
   const totalExpenses = scopedExpenses.reduce((a, c) => a + c.amount, 0);
@@ -823,26 +845,6 @@ export const FinanceScreens: React.FC<FinanceProps> = ({
     .filter((t) => t.paymentStatus !== 'lunas')
     .reduce((a, t) => a + Math.max(0, t.total - t.paidAmount), 0);
 
-  const topProducts = useMemo(() => {
-    const map = new Map<string, { name: string; qty: number; revenue: number }>();
-    scopedTx.forEach((t) => {
-      t.items.forEach((i) => {
-        const cur = map.get(i.productId) || { name: i.name, qty: 0, revenue: 0 };
-        cur.qty += i.qty;
-        cur.revenue += i.unitPrice * i.qty - i.discount;
-        map.set(i.productId, cur);
-      });
-    });
-    return Array.from(map.values()).sort((a, b) => b.qty - a.qty).slice(0, 5);
-  }, [scopedTx]);
-
-  const dailyReportTx = useMemo(
-    () =>
-      data.transactions
-        .filter((t) => toDateKey(t.createdAt) === reportDateKey)
-        .sort((a, b) => a.receiptNo - b.receiptNo || a.createdAt - b.createdAt),
-    [data.transactions, reportDateKey]
-  );
   const dailyReportTotal = dailyReportTx.reduce((acc, t) => acc + t.total, 0);
   const [ry, rm, rd] = reportDateKey.split('-').map(Number);
   const reportDateLabel = formatDayReadable(
