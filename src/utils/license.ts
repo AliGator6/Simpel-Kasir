@@ -9,10 +9,14 @@ const ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 const EPOCH_2025_UTC_MS = Date.UTC(2025, 0, 1);
 const MS_PER_DAY = 86_400_000;
 
+const VENDOR_AUTH_GUARD_KEY = 'simpelkasir_vendor_auth_guard_v1';
+
 // Constant offline signing secret shared between app verifier & vendor generator
 const SIGNING_SECRET = 'SimpelKasir_Offline_License_Cara1_2026_v1';
-// SHA-256("SK_VENDOR_GATE_V1::261126")
-const VENDOR_PIN_SHA256 = 'c264ac0dbf7a114046106ca6831ab74bb2dfb8bc2ffe7e02611ec08bbb64b64e';
+// 2,500-round key-stretched SHA-256 hash for vendor passphrase
+const VENDOR_PIN_HASH_V2 = 'defd11c175ff5d7af033f9065b91d7b465b33544514a21e0c590fb8ade521ff0';
+const VENDOR_KDF_ROUNDS = 2500;
+const MAX_VENDOR_ATTEMPTS_BEFORE_LOCK = 5;
 
 export const TRIAL_DAYS = 7;
 export const EXPIRY_REMINDER_DAYS = 3;
@@ -559,10 +563,140 @@ export function evaluateLicense(
 // Vendor Generator Access & History
 // =========================================================================
 
+export interface VendorAuthLockState {
+  failedAttempts: number;
+  lockedUntilMs: number;
+  isLocked: boolean;
+  remainingSec: number;
+  attemptsLeft: number;
+}
+
+function constantTimeHexEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function stretchVendorSecret(secret: string): string {
+  let digest = sha256Hex(`SK_VENDOR_GATE_V2::${secret}`);
+  for (let i = 1; i < VENDOR_KDF_ROUNDS; i++) {
+    digest = sha256Hex(`SK_V2_${i}::${digest}`);
+  }
+  return digest;
+}
+
 export function verifyVendorPin(pin: string): boolean {
   const clean = (pin || '').trim();
   if (!clean) return false;
-  return sha256Hex(`SK_VENDOR_GATE_V1::${clean}`) === VENDOR_PIN_SHA256;
+  return constantTimeHexEqual(stretchVendorSecret(clean), VENDOR_PIN_HASH_V2);
+}
+
+function readVendorAuthRaw(): { failedAttempts: number; lockedUntilMs: number } {
+  try {
+    const raw = localStorage.getItem(VENDOR_AUTH_GUARD_KEY);
+    if (!raw) return { failedAttempts: 0, lockedUntilMs: 0 };
+    const parsed = JSON.parse(raw) as { failedAttempts?: unknown; lockedUntilMs?: unknown };
+    return {
+      failedAttempts:
+        typeof parsed.failedAttempts === 'number' && parsed.failedAttempts > 0
+          ? Math.floor(parsed.failedAttempts)
+          : 0,
+      lockedUntilMs:
+        typeof parsed.lockedUntilMs === 'number' && parsed.lockedUntilMs > 0
+          ? parsed.lockedUntilMs
+          : 0,
+    };
+  } catch {
+    return { failedAttempts: 0, lockedUntilMs: 0 };
+  }
+}
+
+function writeVendorAuthRaw(failedAttempts: number, lockedUntilMs: number): void {
+  try {
+    localStorage.setItem(
+      VENDOR_AUTH_GUARD_KEY,
+      JSON.stringify({ failedAttempts, lockedUntilMs })
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getVendorAuthLockState(nowMs = Date.now()): VendorAuthLockState {
+  const raw = readVendorAuthRaw();
+  const isLocked = raw.lockedUntilMs > nowMs;
+  const remainingSec = isLocked ? Math.max(1, Math.ceil((raw.lockedUntilMs - nowMs) / 1000)) : 0;
+  const attemptsLeft = isLocked
+    ? 0
+    : Math.max(0, MAX_VENDOR_ATTEMPTS_BEFORE_LOCK - raw.failedAttempts);
+  return {
+    failedAttempts: raw.failedAttempts,
+    lockedUntilMs: raw.lockedUntilMs,
+    isLocked,
+    remainingSec,
+    attemptsLeft,
+  };
+}
+
+function formatLockDurationId(totalSec: number): string {
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins > 0) {
+    return secs > 0 ? `${mins} menit ${secs} detik` : `${mins} menit`;
+  }
+  return `${secs} detik`;
+}
+
+export function attemptVendorUnlock(
+  pin: string,
+  nowMs = Date.now()
+): { ok: boolean; lockState: VendorAuthLockState; message: string } {
+  const current = getVendorAuthLockState(nowMs);
+  if (current.isLocked) {
+    return {
+      ok: false,
+      lockState: current,
+      message: `Login dikunci sementara karena terlalu banyak percobaan salah. Tunggu ${formatLockDurationId(current.remainingSec)}.`,
+    };
+  }
+
+  if (verifyVendorPin(pin)) {
+    writeVendorAuthRaw(0, 0);
+    return {
+      ok: true,
+      lockState: {
+        failedAttempts: 0,
+        lockedUntilMs: 0,
+        isLocked: false,
+        remainingSec: 0,
+        attemptsLeft: MAX_VENDOR_ATTEMPTS_BEFORE_LOCK,
+      },
+      message: '',
+    };
+  }
+
+  const nextFailed = current.failedAttempts + 1;
+  let nextLockMs = 0;
+  if (nextFailed >= MAX_VENDOR_ATTEMPTS_BEFORE_LOCK) {
+    const cooldownMs =
+      nextFailed >= 10 ? 30 * 60_000 : nextFailed >= 8 ? 15 * 60_000 : 5 * 60_000;
+    nextLockMs = nowMs + cooldownMs;
+  }
+  writeVendorAuthRaw(nextFailed, nextLockMs);
+  const nextState = getVendorAuthLockState(nowMs);
+
+  const message = nextState.isLocked
+    ? `Sandi salah ${nextFailed}x. Akses Panel Penjual dikunci selama ${formatLockDurationId(nextState.remainingSec)}.`
+    : `Sandi Penjual salah. Sisa ${nextState.attemptsLeft} percobaan sebelum dikunci sementara.`;
+
+  return {
+    ok: false,
+    lockState: nextState,
+    message,
+  };
 }
 
 function normalizeRecord(raw: Partial<GeneratedLicenseRecord>): GeneratedLicenseRecord | null {

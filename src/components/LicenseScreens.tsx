@@ -1,9 +1,11 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Check,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   KeyRound,
   Lock,
   MessageCircle,
@@ -22,10 +24,13 @@ import {
   GeneratedLicenseRecord,
   LicenseEvaluation,
   LicensePlanOption,
+  VendorAuthLockState,
   VendorPaymentStatus,
+  attemptVendorUnlock,
   formatActivationInput,
   formatDeviceId,
   generateActivationCode,
+  getVendorAuthLockState,
   getVendorCustomerExpiryBadge,
   loadVendorHistory,
   mergeVendorBackupRecords,
@@ -33,7 +38,6 @@ import {
   saveVendorHistory,
   upsertVendorCustomerRecord,
   verifyActivationCode,
-  verifyVendorPin,
 } from '../utils/license';
 import { formatDateShort, toDateKey } from '../utils/storage';
 import { saveExportFile } from '../utils/printer';
@@ -266,7 +270,9 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
 }) => {
   const [unlocked, setUnlocked] = useState(false);
   const [pinInput, setPinInput] = useState('');
+  const [showPin, setShowPin] = useState(false);
   const [pinError, setPinError] = useState('');
+  const [lockState, setLockState] = useState<VendorAuthLockState>(() => getVendorAuthLockState());
   const [activeTab, setActiveTab] = useState<'generate' | 'customers'>('generate');
 
   const [buyerDeviceId, setBuyerDeviceId] = useState('');
@@ -323,11 +329,29 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
     });
   }, [history, customerSearch, customerFilter, nowMs]);
 
+  useEffect(() => {
+    if (!open || unlocked) return;
+    setLockState(getVendorAuthLockState());
+  }, [open, unlocked]);
+
+  useEffect(() => {
+    if (!open || unlocked || !lockState.isLocked) return;
+    const timer = window.setInterval(() => {
+      const next = getVendorAuthLockState();
+      setLockState(next);
+      if (!next.isLocked) {
+        setPinError('');
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [open, unlocked, lockState.isLocked]);
+
   if (!open) return null;
 
   const handleClose = () => {
     setUnlocked(false);
     setPinInput('');
+    setShowPin(false);
     setPinError('');
     setGenError('');
     setConfirmDeleteId(null);
@@ -336,12 +360,15 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
 
   const handleUnlock = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!verifyVendorPin(pinInput)) {
-      setPinError('Sandi Penjual salah.');
+    const res = attemptVendorUnlock(pinInput);
+    setLockState(res.lockState);
+    if (!res.ok) {
+      setPinError(res.message);
       return;
     }
     setPinError('');
     setPinInput('');
+    setShowPin(false);
     setHistory(loadVendorHistory());
     setUnlocked(true);
   };
@@ -530,19 +557,49 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
               <label className="text-xs font-semibold text-slate-600 dark:text-slate-300">
                 Masukkan Sandi Penjual
               </label>
-              <input
-                type="password"
-                autoFocus
-                value={pinInput}
-                onChange={(e) => {
-                  setPinInput(e.target.value);
-                  setPinError('');
-                }}
-                placeholder="Ketik sandi penjual..."
-                className="mt-1.5 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3.5 py-2.5 text-sm font-bold outline-none focus:border-[#165B49]"
-              />
-              {pinError && (
-                <p className="mt-1 text-xs font-semibold text-[#B54B54]">{pinError}</p>
+              <div className="relative mt-1.5">
+                <input
+                  type={showPin ? 'text' : 'password'}
+                  autoFocus
+                  disabled={lockState.isLocked}
+                  value={pinInput}
+                  onChange={(e) => {
+                    setPinInput(e.target.value);
+                    setPinError('');
+                  }}
+                  placeholder="Ketik sandi penjual (huruf, angka, simbol)..."
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent pl-3.5 pr-11 py-2.5 text-sm font-bold outline-none focus:border-[#165B49] disabled:opacity-55"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPin((v) => !v)}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  aria-label={showPin ? 'Sembunyikan sandi' : 'Lihat sandi'}
+                >
+                  {showPin ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {lockState.isLocked ? (
+                <div className="mt-2 flex items-center gap-2 rounded-xl border border-[#B54B54]/30 bg-[#B54B54]/10 px-3 py-2 text-xs font-semibold text-[#B54B54] dark:text-[#E07A82]">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>
+                    Terlalu banyak percobaan salah. Tunggu{' '}
+                    <span className="font-mono tabular-nums">
+                      {Math.floor(lockState.remainingSec / 60)}:
+                      {String(lockState.remainingSec % 60).padStart(2, '0')}
+                    </span>{' '}
+                    lagi.
+                  </span>
+                </div>
+              ) : (
+                pinError && (
+                  <p className="mt-1.5 text-xs font-semibold text-[#B54B54] dark:text-[#E07A82]">
+                    {pinError}
+                  </p>
+                )
               )}
             </div>
             <div className="flex gap-2.5">
@@ -555,7 +612,8 @@ export const VendorLicenseGeneratorModal: React.FC<VendorLicenseGeneratorModalPr
               </button>
               <button
                 type="submit"
-                className="btn-lux-primary min-h-[44px] flex-1 rounded-xl py-2.5 text-xs font-bold"
+                disabled={lockState.isLocked || !pinInput.trim()}
+                className="btn-lux-primary min-h-[44px] flex-1 rounded-xl py-2.5 text-xs font-bold disabled:opacity-50"
               >
                 Buka Panel Penjual
               </button>
