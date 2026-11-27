@@ -100,6 +100,9 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   const [showSaveQuickModal, setShowSaveQuickModal] = useState(false);
   const [quickCartTitle, setQuickCartTitle] = useState('');
   const [editingCartItem, setEditingCartItem] = useState<CartItem | null>(null);
+  const [cartQtyTarget, setCartQtyTarget] = useState<CartItem | null>(null);
+  const [cartQtyInputVal, setCartQtyInputVal] = useState(0);
+  const [cartPriceInputVal, setCartPriceInputVal] = useState(0);
   const [showExtraOptionsModal, setShowExtraOptionsModal] = useState(false);
   const [itemDiscountTarget, setItemDiscountTarget] = useState<CartItem | null>(null);
   const [itemDiscountVal, setItemDiscountVal] = useState(0);
@@ -113,6 +116,7 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
   useBackClose(showTempCustomerModal, () => setShowTempCustomerModal(false));
   useBackClose(showSaveQuickModal, () => setShowSaveQuickModal(false));
   useBackClose(Boolean(editingCartItem), () => setEditingCartItem(null));
+  useBackClose(Boolean(cartQtyTarget), () => setCartQtyTarget(null));
   useBackClose(showExtraOptionsModal, () => setShowExtraOptionsModal(false));
   useBackClose(Boolean(itemDiscountTarget), () => setItemDiscountTarget(null));
   useBackClose(showClearCartConfirm, () => setShowClearCartConfirm(false));
@@ -1198,26 +1202,36 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
               const lineSub = Math.max(0, item.unitPrice * item.qty - item.discount);
               return (
                 <div key={item.productId} className="px-4 py-3.5">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="font-display flex-1 text-[16px] font-semibold text-[#17252B] dark:text-white truncate">
-                      {item.name}
-                    </span>
-                    <span className="w-12 text-center text-[15px] font-semibold tabular-nums text-slate-700 dark:text-slate-200">
-                      {item.qty}
-                    </span>
-                    <span className="font-display w-24 text-right text-[16px] font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
-                      {formatNumber(lineSub)}
-                    </span>
-                  </div>
-                  <p className="mt-0.5 text-sm tabular-nums text-slate-600 dark:text-slate-400">
-                    {formatNumber(item.unitPrice)}
-                    {item.discount > 0 && ` (Diskon -${formatNumber(item.discount)})`}
-                  </p>
-                  {item.note && (
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      Cat: {item.note}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCartQtyTarget(item);
+                      setCartQtyInputVal(item.qty);
+                      setCartPriceInputVal(item.unitPrice);
+                    }}
+                    className="w-full text-left rounded-xl transition active:opacity-75"
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="font-display flex-1 text-[16px] font-semibold text-[#17252B] dark:text-white truncate">
+                        {item.name}
+                      </span>
+                      <span className="min-w-[44px] rounded-lg bg-[#EEF3EF] dark:bg-[#1E2B33] px-2 py-0.5 text-center text-[15px] font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
+                        {item.qty}
+                      </span>
+                      <span className="font-display w-24 text-right text-[16px] font-bold tabular-nums text-[#165B49] dark:text-[#4BB89A]">
+                        {formatNumber(lineSub)}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-sm tabular-nums text-slate-600 dark:text-slate-400">
+                      {formatNumber(item.unitPrice)}
+                      {item.discount > 0 && ` (Diskon -${formatNumber(item.discount)})`}
                     </p>
-                  )}
+                    {item.note && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Cat: {item.note}
+                      </p>
+                    )}
+                  </button>
 
                   {/* 3 Action Buttons per Item */}
                   <div className="mt-2.5 flex items-center gap-2.5">
@@ -1515,6 +1529,116 @@ export const PosFlowScreens: React.FC<PosFlowProps> = ({
             </div>
           </div>
         )}
+
+        {cartQtyTarget && (() => {
+          const matchedProd = data.products.find((p) => p.id === cartQtyTarget.productId);
+          const submitCartQty = (e?: React.SyntheticEvent) => {
+            e?.preventDefault();
+            const nextQty = Math.max(0, cartQtyInputVal);
+            const nextPrice = Math.max(0, cartPriceInputVal);
+            setDraft((prev) => ({
+              ...prev,
+              items:
+                nextQty <= 0
+                  ? prev.items.filter((it) => it.productId !== cartQtyTarget.productId)
+                  : prev.items.map((it) =>
+                      it.productId === cartQtyTarget.productId
+                        ? {
+                            ...it,
+                            qty: nextQty,
+                            unitPrice: matchedProd?.priceEditable ? nextPrice : it.unitPrice,
+                          }
+                        : it
+                    ),
+            }));
+            setCartQtyTarget(null);
+          };
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">
+              <form
+                onSubmit={submitCartQty}
+                className="surface-card animate-modal-in w-full max-w-xs rounded-3xl p-5 shadow-2xl"
+              >
+                <h3 className="font-display text-base font-bold text-[#17252B] dark:text-white break-words [overflow-wrap:anywhere]">
+                  {cartQtyTarget.name}
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Ubah jumlah beli (isi 0 untuk menghapus item)
+                </p>
+                <label className="mt-4 block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Jumlah ({cartQtyTarget.unit || 'pcs'})
+                </label>
+                <div className="mt-1 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCartQtyInputVal((v) => Math.max(0, Number(v || 0) - 1))}
+                    className="btn-lux-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-lg font-bold"
+                    aria-label="Kurangi jumlah"
+                  >
+                    −
+                  </button>
+                  <NumericInput
+                    min={0}
+                    allowDecimal
+                    autoFocus
+                    enterKeyHint="done"
+                    placeholder="Ketik jumlah..."
+                    value={cartQtyInputVal}
+                    onValueChange={setCartQtyInputVal}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        submitCartQty(e);
+                      }
+                    }}
+                    className="w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2.5 text-center text-lg font-bold tabular-nums outline-none focus:border-[#165B49]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCartQtyInputVal((v) => Number(v || 0) + 1)}
+                    className="btn-lux-soft flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-lg font-bold"
+                    aria-label="Tambah jumlah"
+                  >
+                    +
+                  </button>
+                </div>
+                {matchedProd?.priceEditable && (
+                  <>
+                    <label className="mt-3 block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                      Harga Jual Satuan
+                    </label>
+                    <NumericInput
+                      min={0}
+                      enterKeyHint="done"
+                      value={cartPriceInputVal}
+                      onValueChange={setCartPriceInputVal}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          submitCartQty(e);
+                        }
+                      }}
+                      className="mt-1 w-full rounded-xl border border-[#D4DBD5] dark:border-[#2A3944] bg-transparent px-3 py-2 text-base font-semibold tabular-nums outline-none focus:border-[#165B49]"
+                    />
+                  </>
+                )}
+                <div className="mt-5 flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setCartQtyTarget(null)}
+                    className="btn-lux-soft flex-1 rounded-xl py-2.5 text-sm font-semibold"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-lux-primary flex-1 rounded-xl py-2.5 text-sm font-semibold"
+                  >
+                    Terapkan
+                  </button>
+                </div>
+              </form>
+            </div>
+          );
+        })()}
 
         {editingCartItem && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1311]/55 backdrop-blur-xs p-4">

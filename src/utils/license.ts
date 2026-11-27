@@ -45,6 +45,8 @@ export interface LicenseEvaluation {
   detail: string;
 }
 
+export type VendorPaymentStatus = 'lunas' | 'belum_bayar';
+
 export interface GeneratedLicenseRecord {
   id: string;
   deviceId: string;
@@ -53,7 +55,10 @@ export interface GeneratedLicenseRecord {
   planLabel: string;
   expiresAtMs: number | null;
   note: string;
+  phone?: string;
+  paymentStatus?: VendorPaymentStatus;
   createdAt: number;
+  updatedAt?: number;
 }
 
 // =========================================================================
@@ -560,12 +565,41 @@ export function verifyVendorPin(pin: string): boolean {
   return sha256Hex(`SK_VENDOR_GATE_V1::${clean}`) === VENDOR_PIN_SHA256;
 }
 
+function normalizeRecord(raw: Partial<GeneratedLicenseRecord>): GeneratedLicenseRecord | null {
+  if (!raw || typeof raw !== 'object' || typeof raw.deviceId !== 'string' || typeof raw.code !== 'string') {
+    return null;
+  }
+  const formattedDev = formatDeviceId(raw.deviceId);
+  if (!formattedDev) return null;
+  const plan: LicensePlanOption =
+    raw.plan === '7d' || raw.plan === '30d' || raw.plan === '90d' || raw.plan === '365d' || raw.plan === 'permanen'
+      ? raw.plan
+      : '30d';
+  const createdAt = typeof raw.createdAt === 'number' && raw.createdAt > 0 ? raw.createdAt : Date.now();
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : `lic-${createdAt}`,
+    deviceId: formattedDev,
+    code: raw.code.toUpperCase().trim(),
+    plan,
+    planLabel: typeof raw.planLabel === 'string' && raw.planLabel ? raw.planLabel : plan,
+    expiresAtMs: typeof raw.expiresAtMs === 'number' ? raw.expiresAtMs : null,
+    note: typeof raw.note === 'string' && raw.note.trim() ? raw.note.trim() : 'Pembeli',
+    phone: typeof raw.phone === 'string' ? raw.phone.trim() : '',
+    paymentStatus: raw.paymentStatus === 'belum_bayar' ? 'belum_bayar' : 'lunas',
+    createdAt,
+    updatedAt: typeof raw.updatedAt === 'number' && raw.updatedAt > 0 ? raw.updatedAt : createdAt,
+  };
+}
+
 export function loadVendorHistory(): GeneratedLicenseRecord[] {
   try {
     const raw = localStorage.getItem(VENDOR_HISTORY_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as GeneratedLicenseRecord[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((r) => normalizeRecord(r as Partial<GeneratedLicenseRecord>))
+      .filter((r): r is GeneratedLicenseRecord => r !== null);
   } catch {
     return [];
   }
@@ -573,10 +607,103 @@ export function loadVendorHistory(): GeneratedLicenseRecord[] {
 
 export function saveVendorHistory(records: GeneratedLicenseRecord[]): void {
   try {
-    localStorage.setItem(VENDOR_HISTORY_KEY, JSON.stringify(records.slice(0, 30)));
+    localStorage.setItem(VENDOR_HISTORY_KEY, JSON.stringify(records.slice(0, 1000)));
   } catch {
-    // ignore
+    // ignore storage quota errors
   }
+}
+
+export function normalizeWhatsAppPhone(raw: string): string {
+  let digits = (raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('0')) {
+    digits = '62' + digits.slice(1);
+  } else if (digits.startsWith('8')) {
+    digits = '62' + digits;
+  }
+  return digits.length >= 9 ? digits : '';
+}
+
+export function upsertVendorCustomerRecord(
+  records: GeneratedLicenseRecord[],
+  incoming: GeneratedLicenseRecord
+): GeneratedLicenseRecord[] {
+  const normDev = normalizeDeviceId(incoming.deviceId);
+  const formattedDev = formatDeviceId(incoming.deviceId);
+  const existing = records.find((r) => normalizeDeviceId(r.deviceId) === normDev);
+  const now = Date.now();
+  const merged: GeneratedLicenseRecord = {
+    ...incoming,
+    deviceId: formattedDev,
+    note:
+      incoming.note && incoming.note !== 'Pembeli'
+        ? incoming.note
+        : existing?.note && existing.note !== 'Pembeli'
+        ? existing.note
+        : incoming.note || 'Pembeli',
+    phone: incoming.phone?.trim() ? incoming.phone.trim() : existing?.phone || '',
+    paymentStatus: incoming.paymentStatus ?? 'lunas',
+    updatedAt: now,
+  };
+  const rest = records.filter((r) => normalizeDeviceId(r.deviceId) !== normDev);
+  return [merged, ...rest].slice(0, 1000);
+}
+
+export function getVendorCustomerExpiryBadge(
+  record: GeneratedLicenseRecord,
+  nowMs = Date.now()
+): { kind: 'permanent' | 'active' | 'expiring_soon' | 'expired'; label: string; daysLeft: number | null } {
+  if (record.plan === 'permanen' || record.expiresAtMs === null) {
+    return { kind: 'permanent', label: 'Permanen', daysLeft: null };
+  }
+  if (nowMs > record.expiresAtMs) {
+    return { kind: 'expired', label: 'Expired', daysLeft: 0 };
+  }
+  const daysLeft = Math.max(1, Math.ceil((record.expiresAtMs - nowMs) / MS_PER_DAY));
+  if (daysLeft <= EXPIRY_REMINDER_DAYS) {
+    return { kind: 'expiring_soon', label: `H-${daysLeft} (${daysLeft} hr)`, daysLeft };
+  }
+  return { kind: 'active', label: `Sisa ${daysLeft} hr`, daysLeft };
+}
+
+export function mergeVendorBackupRecords(
+  current: GeneratedLicenseRecord[],
+  incomingJson: unknown
+): { merged: GeneratedLicenseRecord[]; importedCount: number } {
+  const arr = Array.isArray(incomingJson)
+    ? incomingJson
+    : incomingJson &&
+      typeof incomingJson === 'object' &&
+      Array.isArray((incomingJson as { customers?: unknown[] }).customers)
+    ? (incomingJson as { customers: unknown[] }).customers
+    : [];
+
+  const byDev = new Map<string, GeneratedLicenseRecord>();
+  for (const r of current) {
+    const norm = normalizeDeviceId(r.deviceId);
+    if (norm) byDev.set(norm, r);
+  }
+
+  let importedCount = 0;
+  for (const raw of arr) {
+    const clean = normalizeRecord(raw as Partial<GeneratedLicenseRecord>);
+    if (!clean) continue;
+    const norm = normalizeDeviceId(clean.deviceId);
+    const prev = byDev.get(norm);
+    if (!prev || (clean.updatedAt || clean.createdAt) >= (prev.updatedAt || prev.createdAt)) {
+      byDev.set(norm, {
+        ...clean,
+        phone: clean.phone || prev?.phone || '',
+        note: clean.note !== 'Pembeli' ? clean.note : prev?.note || 'Pembeli',
+      });
+    }
+    importedCount += 1;
+  }
+
+  const merged = Array.from(byDev.values())
+    .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt))
+    .slice(0, 1000);
+  return { merged, importedCount };
 }
 
 export function shouldShowDailyExpiryReminder(
